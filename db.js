@@ -44,44 +44,29 @@ export async function initDb() {
 
   db.run('CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_events_agent_id ON events(agent_id)');
 
   db.run(`
-    CREATE TABLE IF NOT EXISTS usage_manual (
-      key TEXT PRIMARY KEY,
-      value REAL DEFAULT 0,
-      label TEXT DEFAULT '',
-      updated_at INTEGER DEFAULT 0
+    CREATE TABLE IF NOT EXISTS transcript (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      entry_type TEXT NOT NULL,
+      agent TEXT DEFAULT 'main',
+      agent_id TEXT,
+      model TEXT,
+      tool TEXT,
+      tool_use_id TEXT,
+      content TEXT,
+      is_error INTEGER DEFAULT 0,
+      usage_input INTEGER DEFAULT 0,
+      usage_output INTEGER DEFAULT 0,
+      usage_cache_read INTEGER DEFAULT 0,
+      usage_cache_create INTEGER DEFAULT 0,
+      timestamp INTEGER NOT NULL
     )
   `);
 
-  var defaultRows = [
-    ['session_pct', 0, 'Current session'],
-    ['session_reset_label', 0, 'Resets in --'],
-    ['weekly_all_pct', 0, 'All models'],
-    ['weekly_all_reset_label', 0, 'Resets Fri 7:00 AM'],
-    ['weekly_sonnet_pct', 0, 'Sonnet only'],
-    ['weekly_sonnet_reset_label', 0, 'Resets Sat 5:00 PM'],
-    ['extra_spent', 0, '$0.00'],
-    ['extra_limit', 80, '$80 limit'],
-    ['extra_reset_label', 0, 'Resets Apr 1']
-  ];
-  for (var ri = 0; ri < defaultRows.length; ri++) {
-    db.run(
-      'INSERT OR IGNORE INTO usage_manual (key, value, label, updated_at) VALUES (?, ?, ?, ?)',
-      [defaultRows[ri][0], defaultRows[ri][1], defaultRows[ri][2], Date.now()]
-    );
-  }
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS usage_hourly (
-      hour_start INTEGER PRIMARY KEY,
-      session_count INTEGER DEFAULT 0,
-      total_duration_seconds INTEGER DEFAULT 0,
-      est_tokens INTEGER DEFAULT 0,
-      agent_count INTEGER DEFAULT 0
-    )
-  `);
+  db.run('CREATE INDEX IF NOT EXISTS idx_transcript_session ON transcript(session_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_transcript_ts ON transcript(timestamp)');
 
   saveDb();
   return db;
@@ -89,97 +74,53 @@ export async function initDb() {
 
 export function insertSession(session) {
   db.run(
-    `INSERT OR REPLACE INTO sessions (id, start_time, end_time, duration_seconds, est_tokens, working_dir)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    'INSERT OR REPLACE INTO sessions (id, start_time, end_time, duration_seconds, est_tokens, working_dir) VALUES (?, ?, ?, ?, ?, ?)',
     [session.id, session.start_time, session.end_time || null, session.duration_seconds || null, session.est_tokens || 0, session.working_dir || null]
   );
-  saveDb();
 }
 
 export function insertEvent(event) {
-  // Store full event JSON as payload so timeline can reconstruct all fields
-  var payload = event.payload || null;
-  if (!payload && (event.event_type === 'agent_complete' || event.event_type === 'task_update' || event.event_type === 'session_start')) {
-    payload = JSON.stringify(event);
-  }
+  var payload = event.payload || JSON.stringify(event);
   db.run(
-    `INSERT INTO events (session_id, event_type, agent_type, agent_id, parent_agent_id, payload, timestamp)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    'INSERT INTO events (session_id, event_type, agent_type, agent_id, parent_agent_id, payload, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)',
     [event.session_id, event.event_type, event.agent_type || null, event.agent_id || null, event.parent_agent_id || null, payload, event.timestamp]
   );
-  var result = db.exec('SELECT last_insert_rowid() AS lastID');
-  var lastID = result.length > 0 ? result[0].values[0][0] : null;
-  saveDb();
-  return lastID;
 }
 
-export function getUsage5h() {
-  var fiveHoursAgo = Date.now() - (5 * 3600000);
-  var stmt = db.prepare('SELECT * FROM usage_hourly WHERE hour_start >= ? ORDER BY hour_start ASC');
-  stmt.bind([fiveHoursAgo]);
-  var rows = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject());
+export function insertTranscriptEntries(sessionId, entries) {
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    var content = e.text || e.summary || e.result || '';
+    var usage = e.usage || {};
+    db.run(
+      'INSERT INTO transcript (session_id, entry_type, agent, agent_id, model, tool, tool_use_id, content, is_error, usage_input, usage_output, usage_cache_read, usage_cache_create, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        sessionId,
+        e.entry_type || 'unknown',
+        e.agent || 'main',
+        e.agent_id || null,
+        e.model || null,
+        e.tool || null,
+        e.tool_use_id || null,
+        content,
+        e.is_error ? 1 : 0,
+        usage.input || 0,
+        usage.output || 0,
+        usage.cache_read || 0,
+        usage.cache_create || 0,
+        e.timestamp || Date.now()
+      ]
+    );
   }
-  stmt.free();
-  return rows;
 }
 
-export function getUsageWeekly() {
-  var sevenDaysAgo = Date.now() - (7 * 86400000);
-  var stmt = db.prepare(`
-    SELECT
-      (hour_start / 86400000) * 86400000 AS day_start,
-      SUM(session_count) AS session_count,
-      SUM(total_duration_seconds) AS total_duration_seconds,
-      SUM(est_tokens) AS est_tokens,
-      SUM(agent_count) AS agent_count
-    FROM usage_hourly
-    WHERE hour_start >= ?
-    GROUP BY day_start
-    ORDER BY day_start ASC
-  `);
-  stmt.bind([sevenDaysAgo]);
-  var rows = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject());
-  }
-  stmt.free();
-  return rows;
-}
-
-export function getRecentEvents(limit) {
-  var n = limit || 50;
-  var stmt = db.prepare('SELECT * FROM events ORDER BY timestamp DESC LIMIT ?');
-  stmt.bind([n]);
-  var rows = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject());
-  }
-  stmt.free();
-  return rows;
-}
-
-export function getSessionEvents(sessionId) {
-  var stmt = db.prepare('SELECT * FROM events WHERE session_id = ? ORDER BY timestamp ASC');
-  stmt.bind([sessionId]);
-  var rows = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject());
-  }
-  stmt.free();
-  return rows;
-}
-
-export function getAllSessions(limit) {
-  var n = limit || 50;
-  var stmt = db.prepare(`
-    SELECT s.*, COALESCE(e.cnt, 0) AS event_count
-    FROM sessions s
-    LEFT JOIN (SELECT session_id, COUNT(*) AS cnt FROM events GROUP BY session_id) e ON e.session_id = s.id
-    ORDER BY s.start_time DESC LIMIT ?
-  `);
-  stmt.bind([n]);
+export function getTranscriptEntries(sessionId, limit, offset) {
+  limit = limit || 500;
+  offset = offset || 0;
+  var stmt = db.prepare(
+    'SELECT * FROM transcript WHERE session_id = ? ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?'
+  );
+  stmt.bind([sessionId, limit, offset]);
   var rows = [];
   while (stmt.step()) {
     rows.push(stmt.getAsObject());
@@ -194,98 +135,17 @@ export function getActiveSessions() {
   var columns = result[0].columns;
   return result[0].values.map(function(row) {
     var obj = {};
-    columns.forEach(function(col, i) {
-      obj[col] = row[i];
-    });
+    columns.forEach(function(col, i) { obj[col] = row[i]; });
     return obj;
   });
 }
 
-export function updateHourlyUsage(event) {
-  var hourStart = Math.floor(event.timestamp / 3600000) * 3600000;
-
-  db.run(`
-    INSERT INTO usage_hourly (hour_start, session_count, total_duration_seconds, est_tokens, agent_count)
-    VALUES (?, 0, 0, 0, 0)
-    ON CONFLICT(hour_start) DO NOTHING
-  `, [hourStart]);
-
-  if (event.event_type === 'session_start') {
-    db.run('UPDATE usage_hourly SET session_count = session_count + 1 WHERE hour_start = ?', [hourStart]);
-  }
-
-  if (event.event_type === 'agent_spawn') {
-    db.run('UPDATE usage_hourly SET agent_count = agent_count + 1 WHERE hour_start = ?', [hourStart]);
-  }
-
-  if (event.est_tokens) {
-    db.run('UPDATE usage_hourly SET est_tokens = est_tokens + ? WHERE hour_start = ?', [event.est_tokens, hourStart]);
-  }
-
-  if (event.duration_seconds) {
-    db.run('UPDATE usage_hourly SET total_duration_seconds = total_duration_seconds + ? WHERE hour_start = ?', [event.duration_seconds, hourStart]);
-  }
-
-  saveDb();
-}
-
-export function updateSessionEnd(sessionId, endTime, durationSeconds, estTokens) {
-  db.run(
-    'UPDATE sessions SET end_time = ?, duration_seconds = ?, est_tokens = ? WHERE id = ?',
-    [endTime, durationSeconds, estTokens, sessionId]
+export function getAllSessions(limit) {
+  var n = limit || 50;
+  var stmt = db.prepare(
+    'SELECT s.*, COALESCE(t.cnt, 0) AS entry_count, COALESCE(t.total_input, 0) AS total_input_tokens, COALESCE(t.total_output, 0) AS total_output_tokens FROM sessions s LEFT JOIN (SELECT session_id, COUNT(*) AS cnt, SUM(usage_input) AS total_input, SUM(usage_output) AS total_output FROM transcript GROUP BY session_id) t ON t.session_id = s.id ORDER BY s.start_time DESC LIMIT ?'
   );
-
-  var hourStart = Math.floor(endTime / 3600000) * 3600000;
-  db.run(`
-    INSERT INTO usage_hourly (hour_start, session_count, total_duration_seconds, est_tokens, agent_count)
-    VALUES (?, 0, ?, ?, 0)
-    ON CONFLICT(hour_start) DO UPDATE SET
-      total_duration_seconds = total_duration_seconds + ?,
-      est_tokens = est_tokens + ?
-  `, [hourStart, durationSeconds, estTokens, durationSeconds, estTokens]);
-
-  saveDb();
-}
-
-export function getStats() {
-  var now = Date.now();
-  var startOfDay = Math.floor(now / 86400000) * 86400000;
-  var twentyFourHoursAgo = now - 86400000;
-
-  var sessionsToday = db.exec(
-    'SELECT COUNT(*) FROM sessions WHERE start_time >= ?',
-    [startOfDay]
-  );
-  var sessionCount = sessionsToday.length > 0 ? sessionsToday[0].values[0][0] : 0;
-
-  var avgDuration = db.exec(
-    'SELECT AVG(duration_seconds) FROM sessions WHERE start_time >= ? AND duration_seconds IS NOT NULL',
-    [startOfDay]
-  );
-  var avgDur = avgDuration.length > 0 ? avgDuration[0].values[0][0] : 0;
-
-  var tokens24h = db.exec(
-    'SELECT SUM(est_tokens) FROM usage_hourly WHERE hour_start >= ?',
-    [twentyFourHoursAgo]
-  );
-  var tokenCount = tokens24h.length > 0 ? tokens24h[0].values[0][0] : 0;
-
-  var agentsToday = db.exec(
-    "SELECT COUNT(DISTINCT agent_id) FROM events WHERE timestamp >= ? AND agent_id IS NOT NULL AND event_type = 'agent_spawn'",
-    [startOfDay]
-  );
-  var agentCount = agentsToday.length > 0 ? agentsToday[0].values[0][0] : 0;
-
-  return {
-    sessions_today: sessionCount || 0,
-    avg_duration_seconds: Math.round(avgDur || 0),
-    tokens_24h: tokenCount || 0,
-    agents_today: agentCount || 0
-  };
-}
-
-export function getUsagePlan() {
-  var stmt = db.prepare('SELECT * FROM usage_manual ORDER BY key ASC');
+  stmt.bind([n]);
   var rows = [];
   while (stmt.step()) {
     rows.push(stmt.getAsObject());
@@ -294,12 +154,39 @@ export function getUsagePlan() {
   return rows;
 }
 
-export function setUsagePlan(key, value, label) {
+export function updateSessionEnd(sessionId, endTime, durationSeconds, estTokens) {
   db.run(
-    'UPDATE usage_manual SET value = ?, label = ?, updated_at = ? WHERE key = ?',
-    [value, label, Date.now(), key]
+    'UPDATE sessions SET end_time = ?, duration_seconds = ?, est_tokens = ? WHERE id = ?',
+    [endTime, durationSeconds, estTokens, sessionId]
   );
-  saveDb();
+}
+
+export function getStats() {
+  var now = Date.now();
+  var startOfDay = Math.floor(now / 86400000) * 86400000;
+
+  var sessionsToday = db.exec('SELECT COUNT(*) FROM sessions WHERE start_time >= ?', [startOfDay]);
+  var sessionCount = sessionsToday.length > 0 ? sessionsToday[0].values[0][0] : 0;
+
+  var tokensToday = db.exec(
+    'SELECT SUM(usage_input), SUM(usage_output) FROM transcript WHERE timestamp >= ?',
+    [startOfDay]
+  );
+  var inputTokens = tokensToday.length > 0 ? (tokensToday[0].values[0][0] || 0) : 0;
+  var outputTokens = tokensToday.length > 0 ? (tokensToday[0].values[0][1] || 0) : 0;
+
+  var agentsToday = db.exec(
+    "SELECT COUNT(DISTINCT agent) FROM transcript WHERE timestamp >= ? AND agent != 'main'",
+    [startOfDay]
+  );
+  var agentCount = agentsToday.length > 0 ? agentsToday[0].values[0][0] : 0;
+
+  return {
+    sessions_today: sessionCount || 0,
+    input_tokens_today: inputTokens || 0,
+    output_tokens_today: outputTokens || 0,
+    agents_today: agentCount || 0
+  };
 }
 
 export function saveDb() {

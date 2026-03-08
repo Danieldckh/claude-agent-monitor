@@ -9,26 +9,18 @@ import {
   initDb,
   insertSession,
   insertEvent,
-  getUsage5h,
-  getUsageWeekly,
-  getRecentEvents,
-  getSessionEvents,
+  insertTranscriptEntries,
+  getTranscriptEntries,
   getActiveSessions,
   getAllSessions,
-  updateHourlyUsage,
   updateSessionEnd,
   getStats,
-  getUsagePlan,
-  setUsagePlan,
   saveDb
 } from './db.js';
 
 var __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// In-memory state: sessionId -> { id, startTime, workingDir, agents: Map(agentId -> agent) }
 var activeSessions = new Map();
-
-// WebSocket client tracking
 var wsClients = new Set();
 
 function broadcast(data) {
@@ -43,15 +35,7 @@ function broadcast(data) {
 function sessionsToObject(sessionsMap) {
   var obj = {};
   sessionsMap.forEach(function(session, id) {
-    var sessionCopy = Object.assign({}, session);
-    var agentsObj = {};
-    if (session.agents) {
-      session.agents.forEach(function(agent, agentId) {
-        agentsObj[agentId] = agent;
-      });
-    }
-    sessionCopy.agents = agentsObj;
-    obj[id] = sessionCopy;
+    obj[id] = Object.assign({}, session);
   });
   return obj;
 }
@@ -64,8 +48,7 @@ function restoreSessionsFromDb() {
       activeSessions.set(s.id, {
         id: s.id,
         startTime: s.start_time,
-        workingDir: s.working_dir || null,
-        agents: new Map()
+        workingDir: s.working_dir || null
       });
     }
   }
@@ -78,7 +61,7 @@ async function main() {
 
   var app = express();
   app.use(cors());
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '5mb' }));
   app.use(express.static(path.join(__dirname, 'public')));
 
   var server = http.createServer(app);
@@ -99,200 +82,93 @@ async function main() {
     });
   });
 
-  // POST /events — main event ingestion endpoint
+  // POST /events — session lifecycle events
   app.post('/events', function(req, res) {
     try {
       var event = req.body;
       var type = event.event_type;
-      // Normalize timestamp to milliseconds
       var now = event.timestamp || Date.now();
-      if (now < 1e12) now = now * 1000; // convert seconds to ms
+      if (now < 1e12) now = now * 1000;
       event.timestamp = now;
 
-      // Insert event into DB
-      var eventId = insertEvent(event);
+      insertEvent(event);
 
-      // Handle by event type
       if (type === 'session_start') {
         insertSession({
           id: event.session_id,
           start_time: now,
           working_dir: event.working_dir || null
         });
-
         activeSessions.set(event.session_id, {
           id: event.session_id,
           startTime: now,
-          workingDir: event.working_dir || null,
-          agents: new Map()
+          workingDir: event.working_dir || null
         });
-
-        updateHourlyUsage(event);
-
+        broadcast({ type: 'session_start', session_id: event.session_id, working_dir: event.working_dir, timestamp: now });
       } else if (type === 'session_end') {
-        var duration = event.duration_seconds || 0;
-        var tokens = event.est_tokens || 0;
-        updateSessionEnd(event.session_id, now, duration, tokens);
+        updateSessionEnd(event.session_id, now, 0, 0);
         activeSessions.delete(event.session_id);
-
-      } else if (type === 'agent_spawn') {
-        var session = activeSessions.get(event.session_id);
-        if (session) {
-          session.agents.set(event.agent_id, {
-            id: event.agent_id,
-            type: event.agent_type || 'unknown',
-            parentAgentId: event.parent_agent_id || null,
-            status: 'running',
-            startTime: now,
-            endTime: null,
-            duration: null,
-            thoughts: [],
-            tasks: []
-          });
-        }
-        updateHourlyUsage(event);
-
-      } else if (type === 'agent_output') {
-        var session = activeSessions.get(event.session_id);
-        if (session) {
-          var agent = session.agents.get(event.agent_id);
-          if (agent) {
-            agent.thoughts.push({
-              text: event.payload || '',
-              timestamp: now
-            });
-          }
-        }
-
-      } else if (type === 'agent_complete') {
-        var session = activeSessions.get(event.session_id);
-        if (session) {
-          var agent = session.agents.get(event.agent_id);
-          if (agent) {
-            agent.status = 'completed';
-            agent.endTime = now;
-            agent.duration = event.duration_seconds || (now - agent.startTime);
-          }
-        }
-
-      } else if (type === 'agent_error') {
-        var session = activeSessions.get(event.session_id);
-        if (session) {
-          var agent = session.agents.get(event.agent_id);
-          if (agent) {
-            agent.status = 'error';
-          }
-        }
-
-      } else if (type === 'task_update') {
-        var session = activeSessions.get(event.session_id);
-        if (session) {
-          var agent = session.agents.get(event.agent_id);
-          if (agent) {
-            agent.tasks.push({
-              taskId: event.task_id || null,
-              status: event.task_status || null,
-              description: event.task_description || event.payload || '',
-              timestamp: now
-            });
-          }
-        }
+        broadcast({ type: 'session_end', session_id: event.session_id, timestamp: now });
       }
 
-      // Broadcast event to all WebSocket clients
-      broadcast({
-        type: 'event',
-        event: Object.assign({}, event, { id: eventId })
-      });
-
-      // Save DB after mutations
       saveDb();
-
-      res.json({ ok: true, eventId: eventId });
+      res.json({ ok: true });
     } catch (err) {
       console.error('Error processing event:', err);
       res.status(500).json({ error: 'Failed to process event' });
     }
   });
 
+  // POST /transcript — batch transcript entries from watcher
+  app.post('/transcript', function(req, res) {
+    try {
+      var sessionId = req.body.session_id;
+      var entries = req.body.entries || [];
+      if (!sessionId || entries.length === 0) {
+        return res.json({ ok: true, count: 0 });
+      }
+
+      insertTranscriptEntries(sessionId, entries);
+
+      // Broadcast each entry to WebSocket clients
+      broadcast({
+        type: 'transcript_batch',
+        session_id: sessionId,
+        entries: entries
+      });
+
+      saveDb();
+      res.json({ ok: true, count: entries.length });
+    } catch (err) {
+      console.error('Error processing transcript:', err);
+      res.status(500).json({ error: 'Failed to process transcript' });
+    }
+  });
+
   // REST endpoints
-  app.get('/api/usage/5h', function(req, res) {
-    try {
-      res.json(getUsage5h());
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to get usage data' });
-    }
-  });
-
-  app.get('/api/usage/weekly', function(req, res) {
-    try {
-      res.json(getUsageWeekly());
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to get weekly usage data' });
-    }
-  });
-
   app.get('/api/stats', function(req, res) {
-    try {
-      res.json(getStats());
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to get stats' });
-    }
+    try { res.json(getStats()); }
+    catch (err) { res.status(500).json({ error: 'Failed to get stats' }); }
   });
 
   app.get('/api/sessions', function(req, res) {
-    try {
-      res.json(getActiveSessions());
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to get sessions' });
-    }
+    try { res.json(getActiveSessions()); }
+    catch (err) { res.status(500).json({ error: 'Failed to get sessions' }); }
   });
 
   app.get('/api/sessions/history', function(req, res) {
     try {
       var limit = parseInt(req.query.limit, 10) || 50;
       res.json(getAllSessions(limit));
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to get session history' });
-    }
+    } catch (err) { res.status(500).json({ error: 'Failed to get session history' }); }
   });
 
-  app.get('/api/sessions/:id/events', function(req, res) {
+  app.get('/api/sessions/:id/transcript', function(req, res) {
     try {
-      res.json(getSessionEvents(req.params.id));
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to get session events' });
-    }
-  });
-
-  app.get('/api/events/recent', function(req, res) {
-    try {
-      var limit = parseInt(req.query.limit, 10) || 50;
-      res.json(getRecentEvents(limit));
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to get recent events' });
-    }
-  });
-
-  app.get('/api/usage/plan', function(req, res) {
-    try {
-      res.json(getUsagePlan());
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to get plan usage data' });
-    }
-  });
-
-  app.post('/api/usage/plan', function(req, res) {
-    try {
-      var key = req.body.key;
-      var value = req.body.value !== undefined ? req.body.value : 0;
-      var label = req.body.label !== undefined ? req.body.label : '';
-      if (!key) return res.status(400).json({ error: 'key required' });
-      setUsagePlan(key, value, label);
-      res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to update plan usage data' });
-    }
+      var limit = parseInt(req.query.limit, 10) || 500;
+      var offset = parseInt(req.query.offset, 10) || 0;
+      res.json(getTranscriptEntries(req.params.id, limit, offset));
+    } catch (err) { res.status(500).json({ error: 'Failed to get transcript' }); }
   });
 
   var PORT = process.env.PORT || 3500;

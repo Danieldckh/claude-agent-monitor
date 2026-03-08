@@ -15,89 +15,47 @@
     </div>
     <div class="header-right">
       <span id="stat-sessions">0</span> sessions
-      <span class="header-sep">|</span>
+      <span class="sep">|</span>
       <span id="stat-agents">0</span> agents
-      <span class="header-sep">|</span>
-      <span id="stat-tokens">0</span> tokens
+      <span class="sep">|</span>
+      <span id="stat-input-tokens">0</span> in
+      <span class="sep">/</span>
+      <span id="stat-output-tokens">0</span> out
     </div>
   </header>
 
-  <div id="usage-bar">
-    <div class="plan-bars">
-      <div class="plan-bar-row">
-        <div class="plan-bar-label-row">
-          <span class="plan-bar-name">Current session</span>
-          <span class="plan-bar-reset" id="plan-session-reset">Resets in --</span>
-        </div>
-        <div class="plan-bar-track">
-          <div class="plan-bar-fill" id="plan-session-fill" style="width:0%"></div>
-        </div>
-        <span class="plan-bar-pct" id="plan-session-pct">0%</span>
-      </div>
-      <div class="plan-bar-row">
-        <div class="plan-bar-label-row">
-          <span class="plan-bar-name">All models</span>
-          <span class="plan-bar-reset" id="plan-weekly-all-reset">Resets Fri 7:00 AM</span>
-        </div>
-        <div class="plan-bar-track">
-          <div class="plan-bar-fill color-blue" id="plan-weekly-all-fill" style="width:0%"></div>
-        </div>
-        <span class="plan-bar-pct" id="plan-weekly-all-pct">0%</span>
-      </div>
-      <div class="plan-bar-row">
-        <div class="plan-bar-label-row">
-          <span class="plan-bar-name">Sonnet only</span>
-          <span class="plan-bar-reset" id="plan-sonnet-reset">Resets Sat 5:00 PM</span>
-        </div>
-        <div class="plan-bar-track">
-          <div class="plan-bar-fill color-purple" id="plan-sonnet-fill" style="width:0%"></div>
-        </div>
-        <span class="plan-bar-pct" id="plan-sonnet-pct">0%</span>
-      </div>
-      <div class="plan-bar-row">
-        <div class="plan-bar-label-row">
-          <span class="plan-bar-name">Extra usage</span>
-          <span class="plan-bar-reset" id="plan-extra-reset">Resets Apr 1</span>
-        </div>
-        <div class="plan-bar-track">
-          <div class="plan-bar-fill color-yellow" id="plan-extra-fill" style="width:0%"></div>
-        </div>
-        <span class="plan-bar-pct" id="plan-extra-label">$0.00 / $80</span>
-      </div>
-    </div>
-    <button class="plan-gear-btn" id="plan-gear-btn" title="Edit usage values" aria-label="Edit usage values">&#9881;</button>
-  </div>
-
-  <div id="session-tabs" aria-label="Active sessions"></div>
-
   <div id="main-layout">
-    <div id="session-timeline">
-      <div class="timeline-header">
-        <span id="timeline-session-label">No session selected</span>
-        <label class="auto-scroll-toggle">
-          <input type="checkbox" id="auto-scroll-check" checked>
-          Auto-scroll
-        </label>
+    <div id="transcript-panel">
+      <div class="panel-header">
+        <span id="panel-session-label">No session selected</span>
+        <div class="panel-controls">
+          <label class="filter-label">
+            <select id="filter-type">
+              <option value="all">All</option>
+              <option value="thinking">Thinking</option>
+              <option value="text">Text</option>
+              <option value="tool_use">Tool calls</option>
+              <option value="tool_result">Results</option>
+              <option value="user">User</option>
+              <option value="agent_prompt">Agent prompts</option>
+            </select>
+          </label>
+          <label class="filter-label">
+            <select id="filter-agent">
+              <option value="all">All agents</option>
+            </select>
+          </label>
+          <label class="auto-scroll-toggle">
+            <input type="checkbox" id="auto-scroll-check" checked> Live
+          </label>
+        </div>
       </div>
-      <div id="timeline-entries"></div>
+      <div id="transcript-entries"></div>
     </div>
-    <aside id="session-history">
-      <div class="history-header">Sessions</div>
-      <div id="history-cards"></div>
+    <aside id="session-sidebar">
+      <div class="sidebar-header">Sessions</div>
+      <div id="session-cards"></div>
     </aside>
-  </div>
-
-  <div id="usage-modal" class="modal-overlay" hidden aria-modal="true" role="dialog" aria-label="Edit usage values">
-    <div class="modal-box">
-      <div class="modal-header">
-        <span class="modal-title">Edit Usage Values</span>
-        <button class="modal-close" id="modal-close-btn" aria-label="Close">&times;</button>
-      </div>
-      <div class="modal-body" id="modal-body"></div>
-      <div class="modal-footer">
-        <button class="modal-save-btn" id="modal-save-btn">Save</button>
-      </div>
-    </div>
   </div>
 
   <script src="app.js"></script>
