@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Claude Agent Monitor</title>
   <link rel="stylesheet" href="style.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 </head>
 <body>
   <header id="header">
@@ -15,67 +14,40 @@
       <span id="connection-label">Disconnected</span>
     </div>
     <div class="header-right">
-      <span id="active-session-label">No active session</span>
+      <span id="stat-sessions">0</span> sessions
+      <span class="header-sep">|</span>
+      <span id="stat-agents">0</span> agents
+      <span class="header-sep">|</span>
+      <span id="stat-tokens">0</span> tokens
     </div>
   </header>
 
-  <main id="main">
-    <section id="tree-panel">
-      <div class="panel-header">
-        <h2>Live Agent Tree</h2>
-        <div class="panel-header-actions">
-          <button id="collapse-all-btn" title="Collapse all">-</button>
-          <button id="expand-all-btn" title="Expand all">+</button>
-        </div>
+  <div id="usage-bar">
+    <div class="usage-track">
+      <span class="usage-label">5h</span>
+      <div class="usage-progress">
+        <div class="usage-fill" id="usage-5h-fill" style="width: 0%"></div>
       </div>
-      <div id="agent-tree"></div>
-    </section>
-
-    <section id="usage-panel">
-      <div class="panel-header">
-        <h2>Usage</h2>
-      </div>
-      <div class="chart-container">
-        <h3>5-Hour Rolling Window</h3>
-        <canvas id="chart-5h"></canvas>
-      </div>
-      <div class="chart-container">
-        <h3>Weekly Overview</h3>
-        <canvas id="chart-weekly"></canvas>
-      </div>
-      <div id="stats-card">
-        <h3>Today</h3>
-        <div class="stat-row">
-          <span class="stat-label">Sessions</span>
-          <span class="stat-value" id="stat-sessions">0</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Avg Duration</span>
-          <span class="stat-value" id="stat-duration">0m</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Est. Tokens 24h</span>
-          <span class="stat-value" id="stat-tokens">0</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Agents Spawned</span>
-          <span class="stat-value" id="stat-agents">0</span>
-        </div>
-      </div>
-    </section>
-  </main>
-
-  <div id="detail-panel">
-    <div class="panel-header">
-      <h2 id="detail-title">Agent Detail</h2>
-      <div class="panel-header-actions">
-        <button id="detail-close-btn" title="Minimize">_</button>
-      </div>
+      <span class="usage-value" id="usage-5h-value">0%</span>
     </div>
-    <div id="detail-content">
-      <p class="empty-state">Select an agent node to view details</p>
+    <div class="usage-track">
+      <span class="usage-label">7d</span>
+      <div class="usage-progress">
+        <div class="usage-fill weekly" id="usage-weekly-fill" style="width: 0%"></div>
+      </div>
+      <span class="usage-value" id="usage-weekly-value">0%</span>
     </div>
   </div>
+
+  <div id="tree-toolbar">
+    <span id="active-session-label">No active sessions</span>
+    <div class="toolbar-actions">
+      <button id="expand-all-btn" title="Expand all">+</button>
+      <button id="collapse-all-btn" title="Collapse all">-</button>
+    </div>
+  </div>
+
+  <main id="agent-tree"></main>
 
   <script src="app.js"></script>
 </body>

@@ -1,26 +1,17 @@
 (function() {
   'use strict';
 
-  // ── State ──────────────────────────────────────────────────────────
-  var sessions = {};       // sessionId -> { id, startTime, workingDir, ended, agents: { agentId -> agent } }
+  var sessions = {};
   var selectedNodeId = null;
   var ws = null;
-  var chart5h = null;
-  var chartWeekly = null;
   var reconnectTimer = null;
-  var treeRefreshTimer = null;
-  var chartRefreshTimer = null;
 
-  // ── DOM References ─────────────────────────────────────────────────
   var elTree = document.getElementById('agent-tree');
   var elConnectionDot = document.getElementById('connection-status');
   var elConnectionLabel = document.getElementById('connection-label');
   var elSessionLabel = document.getElementById('active-session-label');
-  var elDetailPanel = document.getElementById('detail-panel');
-  var elDetailTitle = document.getElementById('detail-title');
-  var elDetailContent = document.getElementById('detail-content');
 
-  // ── Utilities ──────────────────────────────────────────────────────
+  // Utilities
   function formatDuration(seconds) {
     if (seconds == null || isNaN(seconds)) return '0s';
     seconds = Math.round(seconds);
@@ -40,16 +31,7 @@
     return String(n);
   }
 
-  function escapeHtml(str) {
-    if (!str) return '';
-    var div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-  }
-
-  function nowEpoch() {
-    return Math.floor(Date.now() / 1000);
-  }
+  function nowMs() { return Date.now(); }
 
   function el(tag, attrs, children) {
     var node = document.createElement(tag);
@@ -57,679 +39,311 @@
       var keys = Object.keys(attrs);
       for (var i = 0; i < keys.length; i++) {
         var key = keys[i];
-        if (key === 'className') {
-          node.className = attrs[key];
-        } else if (key === 'textContent') {
-          node.textContent = attrs[key];
-        } else if (key.indexOf('on') === 0) {
-          node.addEventListener(key.substring(2).toLowerCase(), attrs[key]);
-        } else {
-          node.setAttribute(key, attrs[key]);
-        }
+        if (key === 'className') node.className = attrs[key];
+        else if (key === 'textContent') node.textContent = attrs[key];
+        else if (key.indexOf('on') === 0) node.addEventListener(key.substring(2).toLowerCase(), attrs[key]);
+        else node.setAttribute(key, attrs[key]);
       }
     }
     if (children) {
-      if (typeof children === 'string') {
-        node.textContent = children;
-      } else if (Array.isArray(children)) {
+      if (typeof children === 'string') { node.textContent = children; }
+      else if (Array.isArray(children)) {
         for (var i = 0; i < children.length; i++) {
           if (children[i]) {
-            if (typeof children[i] === 'string') {
-              node.appendChild(document.createTextNode(children[i]));
-            } else {
-              node.appendChild(children[i]);
-            }
+            if (typeof children[i] === 'string') node.appendChild(document.createTextNode(children[i]));
+            else node.appendChild(children[i]);
           }
         }
-      } else {
-        node.appendChild(children);
-      }
+      } else { node.appendChild(children); }
     }
     return node;
   }
 
-  // ── WebSocket ──────────────────────────────────────────────────────
+  // WebSocket
   function connect() {
     var protocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    var url = protocol + location.host;
-
-    ws = new WebSocket(url);
-
+    ws = new WebSocket(protocol + location.host);
     ws.onopen = function() {
       elConnectionDot.className = 'status-dot connected';
       elConnectionLabel.textContent = 'Connected';
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     };
-
     ws.onclose = function() {
       elConnectionDot.className = 'status-dot disconnected';
       elConnectionLabel.textContent = 'Disconnected';
-      reconnectTimer = setTimeout(function() {
-        connect();
-      }, 3000);
+      reconnectTimer = setTimeout(connect, 3000);
     };
-
     ws.onmessage = function(evt) {
       try {
         var data = JSON.parse(evt.data);
-        if (data.type === 'snapshot') {
-          handleSnapshot(data);
-        } else if (data.type === 'event') {
-          handleEvent(data.event);
-        }
-      } catch (e) {
-        console.error('WS message parse error:', e);
-      }
+        if (data.type === 'snapshot') handleSnapshot(data);
+        else handleEvent(data);
+      } catch (e) { console.error('WS parse error:', e); }
     };
   }
 
-  // ── Snapshot Handler ───────────────────────────────────────────────
   function handleSnapshot(data) {
     sessions = {};
     if (data.sessions) {
       var keys = Object.keys(data.sessions);
       for (var i = 0; i < keys.length; i++) {
         var s = data.sessions[keys[i]];
-        sessions[keys[i]] = {
-          id: s.id,
-          startTime: s.startTime,
-          workingDir: s.workingDir || null,
-          ended: false,
-          agents: s.agents || {}
-        };
+        sessions[keys[i]] = { id: s.id, startTime: s.startTime, workingDir: s.workingDir || '', ended: false, agents: s.agents || {} };
       }
     }
-    if (data.stats) {
-      updateStats(data.stats);
-    }
+    if (data.stats) updateStats(data.stats);
     renderTree();
-    refreshCharts();
+    refreshUsageBars();
   }
 
-  // ── Event Handler ─────────────────────────────────────────────────
   function handleEvent(event) {
     var type = event.event_type;
     var sid = event.session_id;
 
     if (type === 'session_start') {
-      sessions[sid] = {
-        id: sid,
-        startTime: event.timestamp,
-        workingDir: event.working_dir || null,
-        ended: false,
-        agents: {}
-      };
-
+      sessions[sid] = { id: sid, startTime: event.timestamp, workingDir: event.working_dir || '', ended: false, agents: {} };
     } else if (type === 'session_end') {
-      if (sessions[sid]) {
-        sessions[sid].ended = true;
-        sessions[sid].endTime = event.timestamp;
-        sessions[sid].duration = event.duration_seconds || 0;
-      }
-
+      if (sessions[sid]) { sessions[sid].ended = true; sessions[sid].endTime = event.timestamp; }
     } else if (type === 'agent_spawn') {
       if (sessions[sid]) {
         sessions[sid].agents[event.agent_id] = {
-          id: event.agent_id,
-          type: event.agent_type || 'unknown',
-          parentAgentId: event.parent_agent_id || null,
-          status: 'running',
-          startTime: event.timestamp,
-          endTime: null,
-          duration: null,
-          thoughts: [],
-          tasks: [],
-          prompt: event.payload || null,
-          result: null,
-          error: null
+          id: event.agent_id, type: event.agent_type || 'unknown',
+          parentAgentId: event.parent_agent_id || null, status: 'running',
+          startTime: event.timestamp, endTime: null, duration: null,
+          thoughts: [], tasks: [], prompt: event.prompt || event.payload || '', result: null, error: null
         };
       }
-
     } else if (type === 'agent_output') {
       if (sessions[sid] && sessions[sid].agents[event.agent_id]) {
-        sessions[sid].agents[event.agent_id].thoughts.push({
-          text: event.payload || '',
-          timestamp: event.timestamp
-        });
+        sessions[sid].agents[event.agent_id].thoughts.push({ text: event.text || event.payload || '', timestamp: event.timestamp });
       }
-
     } else if (type === 'agent_complete') {
       if (sessions[sid] && sessions[sid].agents[event.agent_id]) {
-        var agent = sessions[sid].agents[event.agent_id];
-        agent.status = 'completed';
-        agent.endTime = event.timestamp;
-        agent.duration = event.duration_seconds || (event.timestamp - agent.startTime);
-        agent.result = event.payload || null;
+        var a = sessions[sid].agents[event.agent_id];
+        a.status = 'completed'; a.endTime = event.timestamp;
+        a.duration = event.duration_seconds || Math.round((event.timestamp - a.startTime) / 1000);
+        a.result = event.result || event.payload || '';
       }
-
     } else if (type === 'agent_error') {
       if (sessions[sid] && sessions[sid].agents[event.agent_id]) {
-        var errAgent = sessions[sid].agents[event.agent_id];
-        errAgent.status = 'error';
-        errAgent.error = event.payload || 'Unknown error';
+        sessions[sid].agents[event.agent_id].status = 'error';
+        sessions[sid].agents[event.agent_id].error = event.error || event.payload || '';
       }
-
     } else if (type === 'task_update') {
-      if (sessions[sid] && sessions[sid].agents[event.agent_id]) {
+      if (sessions[sid] && event.agent_id && sessions[sid].agents[event.agent_id]) {
         sessions[sid].agents[event.agent_id].tasks.push({
-          taskId: event.task_id || null,
-          status: event.task_status || null,
-          description: event.task_description || event.payload || '',
-          timestamp: event.timestamp
+          taskId: event.task_id, status: event.status || 'pending',
+          subject: event.subject || event.payload || '', timestamp: event.timestamp
         });
       }
     }
-
     renderTree();
     fetchStats();
   }
 
-  // ── Render Tree (DOM-based) ────────────────────────────────────────
+  // Tree rendering
   function renderTree() {
-    var sessionIds = Object.keys(sessions);
-
-    // Clear tree
+    var sids = Object.keys(sessions);
     elTree.textContent = '';
 
-    if (sessionIds.length === 0) {
-      var emptyDiv = el('div', { className: 'empty-state' }, 'Waiting for Claude Code events...');
-      elTree.appendChild(emptyDiv);
+    if (sids.length === 0) {
+      elTree.appendChild(el('div', { className: 'empty-state' }, 'Waiting for Claude Code events...'));
       elSessionLabel.textContent = 'No active sessions';
       return;
     }
 
-    var activeCount = 0;
-    for (var i = 0; i < sessionIds.length; i++) {
-      if (!sessions[sessionIds[i]].ended) activeCount++;
-    }
-    elSessionLabel.textContent = activeCount + ' active session' + (activeCount !== 1 ? 's' : '');
+    var active = 0;
+    for (var i = 0; i < sids.length; i++) { if (!sessions[sids[i]].ended) active++; }
+    elSessionLabel.textContent = active + ' active session' + (active !== 1 ? 's' : '');
 
-    for (var i = 0; i < sessionIds.length; i++) {
-      var session = sessions[sessionIds[i]];
-      elTree.appendChild(buildSessionNode(session));
+    for (var i = 0; i < sids.length; i++) {
+      elTree.appendChild(buildSessionNode(sessions[sids[i]]));
     }
   }
 
   function buildSessionNode(session) {
-    var sessionNodeId = session.id;
-    var isSelected = selectedNodeId === sessionNodeId;
-    var statusIcon = session.ended ? '\u2705' : '\uD83D\uDD04';
-    var elapsed = session.ended
-      ? formatDuration(session.duration || (session.endTime ? session.endTime - session.startTime : 0))
-      : formatDuration(nowEpoch() - session.startTime);
+    var nid = session.id;
+    var icon = session.ended ? '\u2705' : '\uD83D\uDD04';
+    var elapsed = formatDuration(Math.round((( session.ended ? session.endTime : nowMs()) - session.startTime) / 1000));
 
-    var toggleSpan = el('span', { className: 'tree-toggle', textContent: '\u25BC' });
-    toggleSpan.addEventListener('click', function(e) {
-      e.stopPropagation();
-      __toggleNode(sessionNodeId);
-    });
+    var toggle = el('span', { className: 'tree-toggle', textContent: '\u25BC' });
+    toggle.addEventListener('click', function(e) { e.stopPropagation(); toggleNode(nid); });
 
-    var header = el('div', { className: 'tree-node-header' + (isSelected ? ' selected' : '') }, [
-      toggleSpan,
-      el('span', { className: 'tree-icon' }, statusIcon),
-      el('span', { className: 'tree-label' }, 'Session ' + sessionNodeId.substring(0, 8)),
-      el('span', { className: 'tree-duration' }, elapsed),
-      el('span', { className: 'tree-status ' + (session.ended ? 'completed' : 'running') })
+    var header = el('div', { className: 'tree-node-header' + (selectedNodeId === nid ? ' selected' : '') }, [
+      toggle, el('span', { className: 'tree-icon' }, icon),
+      el('span', { className: 'tree-label' }, 'Session ' + nid.substring(0, 12)),
+      el('span', { className: 'tree-duration' }, elapsed)
     ]);
-    header.addEventListener('click', function() {
-      __selectNode(sessionNodeId);
-    });
+    header.addEventListener('click', function() { selectNode(nid); });
 
-    var childrenContainer = el('div', { className: 'tree-children', id: 'children-' + sessionNodeId });
+    var kids = el('div', { className: 'tree-children', id: 'children-' + nid });
 
-    // Find root agents
+    // Show inline detail if selected
+    if (selectedNodeId === nid) {
+      kids.appendChild(el('div', { className: 'tree-detail' },
+        'Working dir: ' + (session.workingDir || 'N/A') + '\nStarted: ' + new Date(session.startTime).toLocaleString() +
+        '\nAgents: ' + Object.keys(session.agents).length
+      ));
+    }
+
     var agentKeys = Object.keys(session.agents);
-    var rootAgentKeys = [];
-    for (var j = 0; j < agentKeys.length; j++) {
-      var a = session.agents[agentKeys[j]];
-      if (!a.parentAgentId || !session.agents[a.parentAgentId]) {
-        rootAgentKeys.push(agentKeys[j]);
-      }
+    var rootAgents = agentKeys.filter(function(aid) {
+      var a = session.agents[aid];
+      return !a.parentAgentId || !session.agents[a.parentAgentId];
+    });
+
+    for (var j = 0; j < rootAgents.length; j++) {
+      kids.appendChild(buildAgentNode(session, rootAgents[j], agentKeys));
     }
 
-    for (var j = 0; j < rootAgentKeys.length; j++) {
-      childrenContainer.appendChild(buildAgentNode(session, rootAgentKeys[j], agentKeys));
-    }
-
-    if (rootAgentKeys.length === 0 && !session.ended) {
-      childrenContainer.appendChild(el('div', { className: 'placeholder' }, 'No agents spawned yet'));
-    }
-
-    var node = el('div', { className: 'tree-node root', 'data-node-id': sessionNodeId }, [
-      header,
-      childrenContainer
-    ]);
-
-    return node;
+    return el('div', { className: 'tree-node root', 'data-node-id': nid }, [header, kids]);
   }
 
-  function buildAgentNode(session, agentId, allAgentKeys) {
+  function buildAgentNode(session, agentId, allKeys) {
     var agent = session.agents[agentId];
     if (!agent) return document.createTextNode('');
 
-    var nodeId = session.id + '::' + agentId;
-    var isSelected = selectedNodeId === nodeId;
+    var nid = session.id + '::' + agentId;
+    var icon = agent.status === 'running' ? '\uD83D\uDD04' : agent.status === 'completed' ? '\u2705' : agent.status === 'error' ? '\u274C' : '\u23F8';
+    var dur = agent.duration ? formatDuration(agent.duration) : (agent.status === 'running' ? formatDuration(Math.round((nowMs() - agent.startTime) / 1000)) : '');
 
-    // Status icon
-    var statusIcon = '\u23F8'; // idle
-    if (agent.status === 'running') statusIcon = '\uD83D\uDD04';
-    else if (agent.status === 'completed') statusIcon = '\u2705';
-    else if (agent.status === 'error') statusIcon = '\u274C';
+    var childKeys = allKeys.filter(function(k) { return session.agents[k] && session.agents[k].parentAgentId === agentId; });
+    var hasContent = childKeys.length > 0 || agent.thoughts.length > 0 || agent.tasks.length > 0 || selectedNodeId === nid;
 
-    // Duration
-    var duration = '';
-    if (agent.duration != null) {
-      duration = formatDuration(agent.duration);
-    } else if (agent.status === 'running' && agent.startTime) {
-      duration = formatDuration(nowEpoch() - agent.startTime);
+    var toggle = el('span', { className: 'tree-toggle', textContent: hasContent ? '\u25BC' : ' ' });
+    if (hasContent) {
+      (function(id) { toggle.addEventListener('click', function(e) { e.stopPropagation(); toggleNode(id); }); })(nid);
     }
 
-    // Find children
-    var childKeys = [];
-    for (var i = 0; i < allAgentKeys.length; i++) {
-      var other = session.agents[allAgentKeys[i]];
-      if (other && other.parentAgentId === agentId) {
-        childKeys.push(allAgentKeys[i]);
-      }
-    }
+    var header = el('div', { className: 'tree-node-header' + (selectedNodeId === nid ? ' selected' : '') }, [
+      toggle, el('span', { className: 'tree-icon' }, icon),
+      el('span', { className: 'tree-label' }, agent.type || agentId),
+      dur ? el('span', { className: 'tree-duration' }, dur) : null
+    ].filter(Boolean));
+    (function(id) { header.addEventListener('click', function() { selectNode(id); }); })(nid);
 
-    var hasChildren = childKeys.length > 0 || (agent.tasks && agent.tasks.length > 0) || (agent.thoughts && agent.thoughts.length > 0);
+    var kids = el('div', { className: 'tree-children', id: 'children-' + nid.replace(/[^a-zA-Z0-9-]/g, '_') });
 
-    // Toggle
-    var toggleSpan;
-    if (hasChildren) {
-      toggleSpan = el('span', { className: 'tree-toggle', textContent: '\u25BC' });
-      (function(nid) {
-        toggleSpan.addEventListener('click', function(e) {
-          e.stopPropagation();
-          __toggleNode(nid);
-        });
-      })(nodeId);
-    } else {
-      toggleSpan = el('span', { className: 'tree-toggle', style: 'visibility:hidden' }, '\u25BC');
-    }
+    // Inline detail when selected (replaces bottom panel)
+    if (selectedNodeId === nid) {
+      var lines = [];
+      lines.push('Type: ' + (agent.type || 'unknown'));
+      lines.push('Status: ' + agent.status);
+      if (agent.startTime) lines.push('Started: ' + new Date(agent.startTime).toLocaleString());
+      if (agent.duration) lines.push('Duration: ' + formatDuration(agent.duration));
 
-    var headerChildren = [
-      toggleSpan,
-      el('span', { className: 'tree-icon' }, statusIcon),
-      el('span', { className: 'tree-label' }, agent.type || agentId)
-    ];
-    if (duration) {
-      headerChildren.push(el('span', { className: 'tree-duration' }, duration));
-    }
-
-    var header = el('div', { className: 'tree-node-header' + (isSelected ? ' selected' : '') }, headerChildren);
-    (function(nid) {
-      header.addEventListener('click', function() {
-        __selectNode(nid);
-      });
-    })(nodeId);
-
-    var nodeChildren = [header];
-
-    if (hasChildren) {
-      var childrenContainer = el('div', { className: 'tree-children', id: 'children-' + nodeId });
-
-      // Tasks
-      if (agent.tasks && agent.tasks.length > 0) {
-        for (var i = 0; i < agent.tasks.length; i++) {
-          var task = agent.tasks[i];
-          var badgeClass = 'task-badge';
-          if (task.status) badgeClass += ' ' + task.status;
-          var taskDiv = el('div', { className: 'tree-task' }, [
-            el('span', { className: badgeClass }, task.status || 'task'),
-            document.createTextNode(' ' + (task.description || ''))
-          ]);
-          childrenContainer.appendChild(taskDiv);
-        }
-      }
-
-      // Last 5 thoughts
-      if (agent.thoughts && agent.thoughts.length > 0) {
-        var start = Math.max(0, agent.thoughts.length - 5);
-        for (var i = start; i < agent.thoughts.length; i++) {
-          var thought = agent.thoughts[i];
-          var text = thought.text || '';
-          if (text.length > 120) text = text.substring(0, 120) + '...';
-          childrenContainer.appendChild(el('div', { className: 'tree-thought', textContent: text }));
-        }
-      }
-
-      // Child agents
-      for (var i = 0; i < childKeys.length; i++) {
-        childrenContainer.appendChild(buildAgentNode(session, childKeys[i], allAgentKeys));
-      }
-
-      nodeChildren.push(childrenContainer);
-    }
-
-    return el('div', { className: 'tree-node', 'data-node-id': nodeId }, nodeChildren);
-  }
-
-  // ── Node Selection ─────────────────────────────────────────────────
-  function __selectNode(nodeId) {
-    selectedNodeId = nodeId;
-
-    var parts = nodeId.split('::');
-    var sessionId = parts[0];
-    var agentId = parts.length > 1 ? parts[1] : null;
-
-    var session = sessions[sessionId];
-    if (!session) return;
-
-    // Clear detail content
-    elDetailContent.textContent = '';
-
-    if (!agentId) {
-      // Session node selected
-      var agentCount = Object.keys(session.agents).length;
-      var elapsed = session.ended
-        ? formatDuration(session.duration || 0)
-        : formatDuration(nowEpoch() - session.startTime);
-
-      elDetailTitle.textContent = 'Session ' + sessionId.substring(0, 8);
-
-      var section = el('div', { className: 'detail-section' }, [
-        el('p', {}, [el('strong', {}, 'Session ID: '), document.createTextNode(sessionId)]),
-        el('p', {}, [el('strong', {}, 'Working Dir: '), document.createTextNode(session.workingDir || 'N/A')]),
-        el('p', {}, [el('strong', {}, 'Started: '), document.createTextNode(new Date(session.startTime * 1000).toLocaleString())]),
-        el('p', {}, [el('strong', {}, 'Status: '), document.createTextNode(session.ended ? 'Ended' : 'Running')]),
-        el('p', {}, [el('strong', {}, 'Duration: '), document.createTextNode(elapsed)]),
-        el('p', {}, [el('strong', {}, 'Agents: '), document.createTextNode(String(agentCount))])
-      ]);
-      elDetailContent.appendChild(section);
-
-    } else {
-      // Agent node selected
-      var agent = session.agents[agentId];
-      if (!agent) return;
-
-      elDetailTitle.textContent = agent.type || agentId;
-
-      var items = [
-        el('p', {}, [el('strong', {}, 'Agent ID: '), document.createTextNode(agentId)]),
-        el('p', {}, [el('strong', {}, 'Type: '), document.createTextNode(agent.type || 'unknown')]),
-        el('p', {}, [el('strong', {}, 'Status: '), document.createTextNode(agent.status || 'idle')])
-      ];
-
-      if (agent.startTime) {
-        items.push(el('p', {}, [el('strong', {}, 'Started: '), document.createTextNode(new Date(agent.startTime * 1000).toLocaleString())]));
-      }
-      if (agent.duration != null) {
-        items.push(el('p', {}, [el('strong', {}, 'Duration: '), document.createTextNode(formatDuration(agent.duration))]));
-      } else if (agent.status === 'running' && agent.startTime) {
-        items.push(el('p', {}, [el('strong', {}, 'Elapsed: '), document.createTextNode(formatDuration(nowEpoch() - agent.startTime))]));
-      }
-      if (agent.parentAgentId) {
-        items.push(el('p', {}, [el('strong', {}, 'Parent: '), document.createTextNode(agent.parentAgentId)]));
-      }
+      var detailDiv = el('div', { className: 'tree-detail' });
+      detailDiv.appendChild(el('div', {}, lines.join('\n')));
 
       if (agent.prompt) {
-        var promptPre = el('pre', {}, agent.prompt);
-        items.push(el('div', { className: 'detail-subsection' }, [el('strong', {}, 'Prompt:'), promptPre]));
+        detailDiv.appendChild(el('div', { className: 'detail-prompt' }, '\n--- Prompt ---\n' + agent.prompt));
       }
-
       if (agent.result) {
-        var resultPre = el('pre', {}, agent.result);
-        items.push(el('div', { className: 'detail-subsection' }, [el('strong', {}, 'Result:'), resultPre]));
+        detailDiv.appendChild(el('div', { className: 'detail-result' }, '\n--- Result ---\n' + agent.result));
       }
-
       if (agent.error) {
-        var errorPre = el('pre', { style: 'color:#f85149' }, agent.error);
-        items.push(el('div', { className: 'detail-subsection' }, [el('strong', {}, 'Error:'), errorPre]));
+        detailDiv.appendChild(el('div', { className: 'detail-error' }, '\n--- Error ---\n' + agent.error));
       }
-
-      // All thoughts
-      if (agent.thoughts && agent.thoughts.length > 0) {
-        var thoughtItems = [el('strong', {}, 'Thoughts (' + agent.thoughts.length + '):')];
-        for (var i = 0; i < agent.thoughts.length; i++) {
-          var t = agent.thoughts[i];
-          var time = new Date(t.timestamp * 1000).toLocaleTimeString();
-          var timeEl = el('small', { style: 'color:#8b949e' }, time);
-          var thoughtDiv = el('div', { className: 'tree-thought', style: 'margin:4px 0' }, [timeEl, document.createTextNode(' ' + t.text)]);
-          thoughtItems.push(thoughtDiv);
+      if (agent.thoughts.length > 0) {
+        var thoughtsDiv = el('div', {}, '\n--- Thoughts (' + agent.thoughts.length + ') ---');
+        for (var t = 0; t < agent.thoughts.length; t++) {
+          thoughtsDiv.appendChild(document.createTextNode('\n[' + new Date(agent.thoughts[t].timestamp).toLocaleTimeString() + '] ' + agent.thoughts[t].text));
         }
-        items.push(el('div', { className: 'detail-subsection' }, thoughtItems));
+        detailDiv.appendChild(thoughtsDiv);
       }
-
-      // Tasks
-      if (agent.tasks && agent.tasks.length > 0) {
-        var taskItems = [el('strong', {}, 'Tasks (' + agent.tasks.length + '):')];
-        for (var i = 0; i < agent.tasks.length; i++) {
-          var task = agent.tasks[i];
-          var badgeClass = 'task-badge';
-          if (task.status) badgeClass += ' ' + task.status;
-          var taskDiv = el('div', { style: 'margin:4px 0' }, [
-            el('span', { className: badgeClass }, task.status || 'task'),
-            document.createTextNode(' ' + (task.description || ''))
-          ]);
-          taskItems.push(taskDiv);
-        }
-        items.push(el('div', { className: 'detail-subsection' }, taskItems));
-      }
-
-      var section = el('div', { className: 'detail-section' }, items);
-      elDetailContent.appendChild(section);
+      kids.appendChild(detailDiv);
     }
 
-    // Un-minimize the detail panel
-    elDetailPanel.classList.remove('minimized');
+    // Tasks
+    for (var i = 0; i < agent.tasks.length; i++) {
+      var task = agent.tasks[i];
+      kids.appendChild(el('div', { className: 'tree-task' }, [
+        el('span', { className: 'task-badge ' + (task.status || 'pending') }, task.status || 'pending'),
+        document.createTextNode(' ' + (task.subject || ''))
+      ]));
+    }
+
+    // Last 5 thoughts (inline in tree)
+    var start = Math.max(0, agent.thoughts.length - 5);
+    for (var i = start; i < agent.thoughts.length; i++) {
+      var text = agent.thoughts[i].text || '';
+      if (text.length > 200) text = text.substring(0, 200) + '...';
+      kids.appendChild(el('div', { className: 'tree-thought', textContent: text }));
+    }
+
+    // Child agents
+    for (var i = 0; i < childKeys.length; i++) {
+      kids.appendChild(buildAgentNode(session, childKeys[i], allKeys));
+    }
+
+    return el('div', { className: 'tree-node', 'data-node-id': nid }, [header, kids]);
+  }
+
+  // Selection
+  function selectNode(nid) {
+    selectedNodeId = (selectedNodeId === nid) ? null : nid;
     renderTree();
   }
-  window.__selectNode = __selectNode;
 
-  // ── Node Toggle ────────────────────────────────────────────────────
-  function __toggleNode(nodeId) {
-    var childrenEl = document.getElementById('children-' + nodeId);
-    if (childrenEl) {
-      childrenEl.classList.toggle('collapsed');
-    }
-  }
-  window.__toggleNode = __toggleNode;
-
-  // ── Toolbar Buttons ────────────────────────────────────────────────
-  document.getElementById('collapse-all-btn').addEventListener('click', function() {
-    var allChildren = elTree.querySelectorAll('.tree-children');
-    for (var i = 0; i < allChildren.length; i++) {
-      allChildren[i].classList.add('collapsed');
-    }
-  });
-
-  document.getElementById('expand-all-btn').addEventListener('click', function() {
-    var allChildren = elTree.querySelectorAll('.tree-children');
-    for (var i = 0; i < allChildren.length; i++) {
-      allChildren[i].classList.remove('collapsed');
-    }
-  });
-
-  document.getElementById('detail-close-btn').addEventListener('click', function() {
-    elDetailPanel.classList.toggle('minimized');
-  });
-
-  // ── Charts ─────────────────────────────────────────────────────────
-  function initCharts() {
-    var darkTheme = {
-      gridColor: '#21262d',
-      tickColor: '#484f58',
-      legendColor: '#8b949e'
-    };
-
-    var ctx5h = document.getElementById('chart-5h').getContext('2d');
-    chart5h = new Chart(ctx5h, {
-      type: 'bar',
-      data: {
-        labels: [],
-        datasets: [
-          {
-            label: 'Sessions',
-            data: [],
-            backgroundColor: 'rgba(63, 185, 80, 0.7)',
-            borderColor: 'rgba(63, 185, 80, 1)',
-            borderWidth: 1
-          },
-          {
-            label: 'Agents',
-            data: [],
-            backgroundColor: 'rgba(56, 139, 253, 0.7)',
-            borderColor: 'rgba(56, 139, 253, 1)',
-            borderWidth: 1
-          }
-        ]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          x: {
-            grid: { color: darkTheme.gridColor },
-            ticks: { color: darkTheme.tickColor, maxRotation: 45 }
-          },
-          y: {
-            grid: { color: darkTheme.gridColor },
-            ticks: { color: darkTheme.tickColor },
-            beginAtZero: true
-          }
-        },
-        plugins: {
-          legend: {
-            labels: { color: darkTheme.legendColor }
-          }
-        }
-      }
-    });
-
-    var ctxWeekly = document.getElementById('chart-weekly').getContext('2d');
-    chartWeekly = new Chart(ctxWeekly, {
-      type: 'bar',
-      data: {
-        labels: [],
-        datasets: [
-          {
-            label: 'Sessions',
-            data: [],
-            backgroundColor: 'rgba(63, 185, 80, 0.7)',
-            borderColor: 'rgba(63, 185, 80, 1)',
-            borderWidth: 1
-          },
-          {
-            label: 'Est. Tokens K',
-            data: [],
-            backgroundColor: 'rgba(163, 113, 247, 0.7)',
-            borderColor: 'rgba(163, 113, 247, 1)',
-            borderWidth: 1
-          }
-        ]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          x: {
-            grid: { color: darkTheme.gridColor },
-            ticks: { color: darkTheme.tickColor }
-          },
-          y: {
-            grid: { color: darkTheme.gridColor },
-            ticks: { color: darkTheme.tickColor },
-            beginAtZero: true
-          }
-        },
-        plugins: {
-          legend: {
-            labels: { color: darkTheme.legendColor }
-          }
-        }
-      }
-    });
+  function toggleNode(nid) {
+    var safeId = 'children-' + nid.replace(/[^a-zA-Z0-9-]/g, '_');
+    var childEl = document.getElementById(safeId);
+    if (childEl) childEl.classList.toggle('collapsed');
   }
 
-  function refreshCharts() {
-    fetch('/api/usage/5h')
-      .then(function(res) { return res.json(); })
-      .then(function(rows) {
-        var labels = [];
-        var sessionData = [];
-        var agentData = [];
-        for (var i = 0; i < rows.length; i++) {
-          var d = new Date(rows[i].hour_start * 1000);
-          labels.push(d.getHours() + ':00');
-          sessionData.push(rows[i].session_count || 0);
-          agentData.push(rows[i].agent_count || 0);
-        }
-        chart5h.data.labels = labels;
-        chart5h.data.datasets[0].data = sessionData;
-        chart5h.data.datasets[1].data = agentData;
-        chart5h.update();
-      })
-      .catch(function(err) {
-        console.error('Failed to fetch 5h usage:', err);
-      });
+  // Usage bars
+  function refreshUsageBars() {
+    fetch('/api/usage/5h').then(function(r) { return r.json(); }).then(function(rows) {
+      var total = 0;
+      for (var i = 0; i < rows.length; i++) total += (rows[i].session_count || 0);
+      var maxSessions = 20; // reasonable 5h max
+      var pct = Math.min(100, Math.round((total / maxSessions) * 100));
+      document.getElementById('usage-5h-fill').style.width = pct + '%';
+      document.getElementById('usage-5h-value').textContent = total + ' sess';
+    }).catch(function() {});
 
-    fetch('/api/usage/weekly')
-      .then(function(res) { return res.json(); })
-      .then(function(rows) {
-        var labels = [];
-        var sessionData = [];
-        var tokenData = [];
-        for (var i = 0; i < rows.length; i++) {
-          var d = new Date(rows[i].day_start * 1000);
-          labels.push((d.getMonth() + 1) + '/' + d.getDate());
-          sessionData.push(rows[i].session_count || 0);
-          tokenData.push(Math.round((rows[i].est_tokens || 0) / 1000));
-        }
-        chartWeekly.data.labels = labels;
-        chartWeekly.data.datasets[0].data = sessionData;
-        chartWeekly.data.datasets[1].data = tokenData;
-        chartWeekly.update();
-      })
-      .catch(function(err) {
-        console.error('Failed to fetch weekly usage:', err);
-      });
+    fetch('/api/usage/weekly').then(function(r) { return r.json(); }).then(function(rows) {
+      var total = 0;
+      for (var i = 0; i < rows.length; i++) total += (rows[i].session_count || 0);
+      var maxWeekly = 100;
+      var pct = Math.min(100, Math.round((total / maxWeekly) * 100));
+      document.getElementById('usage-weekly-fill').style.width = pct + '%';
+      document.getElementById('usage-weekly-value').textContent = total + ' sess';
+    }).catch(function() {});
   }
 
-  // ── Stats ──────────────────────────────────────────────────────────
+  // Stats
   function fetchStats() {
-    fetch('/api/stats')
-      .then(function(res) { return res.json(); })
-      .then(function(s) { updateStats(s); })
-      .catch(function(err) {
-        console.error('Failed to fetch stats:', err);
-      });
+    fetch('/api/stats').then(function(r) { return r.json(); }).then(function(s) { updateStats(s); }).catch(function() {});
   }
 
   function updateStats(s) {
     document.getElementById('stat-sessions').textContent = s.sessions_today || 0;
-    document.getElementById('stat-duration').textContent = formatDuration(s.avg_duration_seconds || 0);
-    document.getElementById('stat-tokens').textContent = formatNumber(s.tokens_24h || 0);
+    document.getElementById('stat-tokens').textContent = formatNumber(s.est_tokens_24h || s.tokens_24h || 0);
     document.getElementById('stat-agents').textContent = s.agents_today || 0;
   }
 
-  // ── Auto-refresh ──────────────────────────────────────────────────
-  function hasRunningAgents() {
+  // Toolbar
+  document.getElementById('collapse-all-btn').addEventListener('click', function() {
+    var all = elTree.querySelectorAll('.tree-children');
+    for (var i = 0; i < all.length; i++) all[i].classList.add('collapsed');
+  });
+  document.getElementById('expand-all-btn').addEventListener('click', function() {
+    var all = elTree.querySelectorAll('.tree-children');
+    for (var i = 0; i < all.length; i++) all[i].classList.remove('collapsed');
+  });
+
+  // Auto-refresh
+  setInterval(function() {
     var sids = Object.keys(sessions);
     for (var i = 0; i < sids.length; i++) {
-      if (!sessions[sids[i]].ended) return true;
-    }
-    return false;
-  }
-
-  treeRefreshTimer = setInterval(function() {
-    if (hasRunningAgents()) {
-      renderTree();
+      if (!sessions[sids[i]].ended) { renderTree(); return; }
     }
   }, 2000);
+  setInterval(refreshUsageBars, 60000);
 
-  chartRefreshTimer = setInterval(function() {
-    refreshCharts();
-  }, 60000);
-
-  // ── Init ───────────────────────────────────────────────────────────
-  initCharts();
+  // Init
   connect();
-  refreshCharts();
+  refreshUsageBars();
   fetchStats();
-
 })();
