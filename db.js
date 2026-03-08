@@ -82,7 +82,7 @@ export function insertEvent(event) {
 }
 
 export function getUsage5h() {
-  var fiveHoursAgo = Math.floor(Date.now() / 1000) - (5 * 3600);
+  var fiveHoursAgo = Date.now() - (5 * 3600000);
   var stmt = db.prepare('SELECT * FROM usage_hourly WHERE hour_start >= ? ORDER BY hour_start ASC');
   stmt.bind([fiveHoursAgo]);
   var rows = [];
@@ -94,10 +94,10 @@ export function getUsage5h() {
 }
 
 export function getUsageWeekly() {
-  var sevenDaysAgo = Math.floor(Date.now() / 1000) - (7 * 86400);
+  var sevenDaysAgo = Date.now() - (7 * 86400000);
   var stmt = db.prepare(`
     SELECT
-      (hour_start / 86400) * 86400 AS day_start,
+      (hour_start / 86400000) * 86400000 AS day_start,
       SUM(session_count) AS session_count,
       SUM(total_duration_seconds) AS total_duration_seconds,
       SUM(est_tokens) AS est_tokens,
@@ -153,7 +153,7 @@ export function getActiveSessions() {
 }
 
 export function updateHourlyUsage(event) {
-  var hourStart = Math.floor(event.timestamp / 3600) * 3600;
+  var hourStart = Math.floor(event.timestamp / 3600000) * 3600000;
 
   db.run(`
     INSERT INTO usage_hourly (hour_start, session_count, total_duration_seconds, est_tokens, agent_count)
@@ -186,7 +186,7 @@ export function updateSessionEnd(sessionId, endTime, durationSeconds, estTokens)
     [endTime, durationSeconds, estTokens, sessionId]
   );
 
-  var hourStart = Math.floor(endTime / 3600) * 3600;
+  var hourStart = Math.floor(endTime / 3600000) * 3600000;
   db.run(`
     INSERT INTO usage_hourly (hour_start, session_count, total_duration_seconds, est_tokens, agent_count)
     VALUES (?, 0, ?, ?, 0)
@@ -199,9 +199,9 @@ export function updateSessionEnd(sessionId, endTime, durationSeconds, estTokens)
 }
 
 export function getStats() {
-  var now = Math.floor(Date.now() / 1000);
-  var startOfDay = Math.floor(now / 86400) * 86400;
-  var twentyFourHoursAgo = now - 86400;
+  var now = Date.now();
+  var startOfDay = Math.floor(now / 86400000) * 86400000;
+  var twentyFourHoursAgo = now - 86400000;
 
   var sessionsToday = db.exec(
     'SELECT COUNT(*) FROM sessions WHERE start_time >= ?',

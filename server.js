@@ -84,7 +84,9 @@ async function main() {
     try {
       var event = req.body;
       var type = event.event_type;
-      var now = event.timestamp || Math.floor(Date.now() / 1000);
+      // Normalize timestamp to milliseconds
+      var now = event.timestamp || Date.now();
+      if (now < 1e12) now = now * 1000; // convert seconds to ms
       event.timestamp = now;
 
       // Insert event into DB

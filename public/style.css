@@ -85,6 +85,54 @@ body {
 }
 .toolbar-actions button:hover { background: var(--border); color: var(--text-primary); }
 
+/* Session tabs */
+#session-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow-x: auto;
+  min-height: 32px;
+}
+#session-tabs:empty { display: none; }
+.session-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-family: "SF Mono", monospace;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+.session-tab:hover { color: var(--text-primary); background: var(--border); }
+.session-tab.active {
+  color: var(--blue);
+  border-color: var(--blue);
+  background: rgba(88,166,255,0.1);
+}
+.session-tab.ended { opacity: 0.5; }
+.session-tab.ended.active { opacity: 0.8; }
+.tab-badge {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  font-weight: 600;
+  line-height: 16px;
+}
+.session-tab.active .tab-badge { background: rgba(88,166,255,0.2); color: var(--blue); }
+
 /* Agent tree */
 #agent-tree {
   flex: 1;

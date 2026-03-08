@@ -3,9 +3,11 @@
 
   var sessions = {};
   var selectedNodeId = null;
+  var activeTabSession = 'all';
   var ws = null;
   var reconnectTimer = null;
 
+  var elTabs = document.getElementById('session-tabs');
   var elTree = document.getElementById('agent-tree');
   var elConnectionDot = document.getElementById('connection-status');
   var elConnectionLabel = document.getElementById('connection-label');
@@ -77,6 +79,7 @@
       try {
         var data = JSON.parse(evt.data);
         if (data.type === 'snapshot') handleSnapshot(data);
+        else if (data.type === 'event') handleEvent(data.event);
         else handleEvent(data);
       } catch (e) { console.error('WS parse error:', e); }
     };
@@ -102,6 +105,7 @@
 
     if (type === 'session_start') {
       sessions[sid] = { id: sid, startTime: event.timestamp, workingDir: event.working_dir || '', ended: false, agents: {} };
+      activeTabSession = sid;
     } else if (type === 'session_end') {
       if (sessions[sid]) { sessions[sid].ended = true; sessions[sid].endTime = event.timestamp; }
     } else if (type === 'agent_spawn') {
@@ -141,9 +145,42 @@
     fetchStats();
   }
 
+  // Tab rendering
+  function renderTabs() {
+    elTabs.textContent = '';
+    var sids = Object.keys(sessions);
+    if (sids.length === 0) return;
+
+    var allTab = el('div', {
+      className: 'session-tab' + (activeTabSession === 'all' ? ' active' : ''),
+      onClick: function() { activeTabSession = 'all'; renderTabs(); renderTree(); }
+    }, 'All');
+    elTabs.appendChild(allTab);
+
+    for (var i = 0; i < sids.length; i++) {
+      (function(sid) {
+        var s = sessions[sid];
+        var agentCount = Object.keys(s.agents).length;
+        var cls = 'session-tab' + (activeTabSession === sid ? ' active' : '') + (s.ended ? ' ended' : '');
+        var tab = el('div', {
+          className: cls,
+          onClick: function() { activeTabSession = sid; renderTabs(); renderTree(); }
+        }, [
+          document.createTextNode(sid.substring(0, 8)),
+          agentCount > 0 ? el('span', { className: 'tab-badge' }, String(agentCount)) : null
+        ].filter(Boolean));
+        elTabs.appendChild(tab);
+      })(sids[i]);
+    }
+  }
+
   // Tree rendering
   function renderTree() {
     var sids = Object.keys(sessions);
+    if (activeTabSession !== 'all') {
+      sids = sids.filter(function(s) { return s === activeTabSession; });
+    }
+    renderTabs();
     elTree.textContent = '';
 
     if (sids.length === 0) {
