@@ -23,25 +23,52 @@
   </header>
 
   <div id="usage-bar">
-    <div class="usage-track">
-      <span class="usage-label">5h</span>
-      <div class="usage-progress">
-        <div class="usage-fill" id="usage-5h-fill" style="width: 0%">
-          <span class="usage-pct" id="usage-5h-pct">0%</span>
+    <div class="plan-bars">
+      <div class="plan-bar-row">
+        <div class="plan-bar-label-row">
+          <span class="plan-bar-name">Current session</span>
+          <span class="plan-bar-reset" id="plan-session-reset">Resets in --</span>
         </div>
-      </div>
-      <span class="usage-value" id="usage-5h-value">0 sess</span>
-    </div>
-    <div class="usage-track">
-      <span class="usage-label">7d</span>
-      <div class="usage-progress">
-        <div class="usage-fill weekly" id="usage-weekly-fill" style="width: 0%">
-          <span class="usage-pct" id="usage-weekly-pct">0%</span>
+        <div class="plan-bar-track">
+          <div class="plan-bar-fill" id="plan-session-fill" style="width:0%"></div>
         </div>
+        <span class="plan-bar-pct" id="plan-session-pct">0%</span>
       </div>
-      <span class="usage-value" id="usage-weekly-value">0 sess</span>
+      <div class="plan-bar-row">
+        <div class="plan-bar-label-row">
+          <span class="plan-bar-name">All models</span>
+          <span class="plan-bar-reset" id="plan-weekly-all-reset">Resets Fri 7:00 AM</span>
+        </div>
+        <div class="plan-bar-track">
+          <div class="plan-bar-fill color-blue" id="plan-weekly-all-fill" style="width:0%"></div>
+        </div>
+        <span class="plan-bar-pct" id="plan-weekly-all-pct">0%</span>
+      </div>
+      <div class="plan-bar-row">
+        <div class="plan-bar-label-row">
+          <span class="plan-bar-name">Sonnet only</span>
+          <span class="plan-bar-reset" id="plan-sonnet-reset">Resets Sat 5:00 PM</span>
+        </div>
+        <div class="plan-bar-track">
+          <div class="plan-bar-fill color-purple" id="plan-sonnet-fill" style="width:0%"></div>
+        </div>
+        <span class="plan-bar-pct" id="plan-sonnet-pct">0%</span>
+      </div>
+      <div class="plan-bar-row">
+        <div class="plan-bar-label-row">
+          <span class="plan-bar-name">Extra usage</span>
+          <span class="plan-bar-reset" id="plan-extra-reset">Resets Apr 1</span>
+        </div>
+        <div class="plan-bar-track">
+          <div class="plan-bar-fill color-yellow" id="plan-extra-fill" style="width:0%"></div>
+        </div>
+        <span class="plan-bar-pct" id="plan-extra-label">$0.00 / $80</span>
+      </div>
     </div>
+    <button class="plan-gear-btn" id="plan-gear-btn" title="Edit usage values" aria-label="Edit usage values">&#9881;</button>
   </div>
+
+  <div id="session-tabs" aria-label="Active sessions"></div>
 
   <div id="main-layout">
     <div id="session-timeline">
@@ -58,6 +85,19 @@
       <div class="history-header">Sessions</div>
       <div id="history-cards"></div>
     </aside>
+  </div>
+
+  <div id="usage-modal" class="modal-overlay" hidden aria-modal="true" role="dialog" aria-label="Edit usage values">
+    <div class="modal-box">
+      <div class="modal-header">
+        <span class="modal-title">Edit Usage Values</span>
+        <button class="modal-close" id="modal-close-btn" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer">
+        <button class="modal-save-btn" id="modal-save-btn">Save</button>
+      </div>
+    </div>
   </div>
 
   <script src="app.js"></script>

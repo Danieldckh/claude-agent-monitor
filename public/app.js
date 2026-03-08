@@ -9,6 +9,13 @@
   var reconnectTimer = null;
   var sessionHistory = [];
 
+  // Session tabs state: { [sessionId]: { id, eventCount, ended } }
+  var sessionTabs = {};
+  var tabOrder = [];
+
+  // Usage plan data
+  var usagePlanData = {};
+
   // Elements
   var elTimeline = document.getElementById('timeline-entries');
   var elSessionLabel = document.getElementById('timeline-session-label');
@@ -16,6 +23,12 @@
   var elConnectionDot = document.getElementById('connection-status');
   var elConnectionLabel = document.getElementById('connection-label');
   var elHistoryCards = document.getElementById('history-cards');
+  var elSessionTabs = document.getElementById('session-tabs');
+  var elUsageModal = document.getElementById('usage-modal');
+  var elModalBody = document.getElementById('modal-body');
+  var elModalSave = document.getElementById('modal-save-btn');
+  var elGearBtn = document.getElementById('plan-gear-btn');
+  var elModalClose = document.getElementById('modal-close-btn');
 
   // Auto-scroll checkbox
   elAutoScroll.addEventListener('change', function() { autoScroll = elAutoScroll.checked; });
@@ -87,10 +100,10 @@
     if (children) {
       if (typeof children === 'string') { node.textContent = children; }
       else if (Array.isArray(children)) {
-        for (var i = 0; i < children.length; i++) {
-          if (children[i]) {
-            if (typeof children[i] === 'string') node.appendChild(document.createTextNode(children[i]));
-            else node.appendChild(children[i]);
+        for (var j = 0; j < children.length; j++) {
+          if (children[j]) {
+            if (typeof children[j] === 'string') node.appendChild(document.createTextNode(children[j]));
+            else node.appendChild(children[j]);
           }
         }
       } else { node.appendChild(children); }
@@ -116,9 +129,9 @@
       content = parsed.input || '';
     } else if (type === 'tool_result') {
       icon = '\u2190';
-      var parsed = tryParsePayload(event.payload);
-      tag = parsed.tool || 'RESULT';
-      content = parsed.result || '';
+      var parsed2 = tryParsePayload(event.payload);
+      tag = parsed2.tool || 'RESULT';
+      content = parsed2.result || '';
     } else if (type === 'agent_spawn') {
       icon = '\u{1F680}';
       tag = event.agent_type || 'AGENT';
@@ -155,7 +168,6 @@
     if (!evt.payload) return evt;
     try {
       var parsed = JSON.parse(evt.payload);
-      // If payload is a full event JSON (has event_type), merge missing fields
       if (parsed.event_type) {
         var keys = Object.keys(parsed);
         for (var i = 0; i < keys.length; i++) {
@@ -164,7 +176,7 @@
           }
         }
       }
-    } catch (e) { /* payload is not JSON, leave as-is */ }
+    } catch (e) { }
     return evt;
   }
 
@@ -173,10 +185,71 @@
     try { return JSON.parse(payload); } catch (e) { return { tool: '', input: payload, result: payload }; }
   }
 
-  // Render a single timeline entry DOM element
-  function createEntryEl(event, flash) {
+  // Build nesting structure from flat events
+  // Returns array of top-level nodes, each with optional .children array
+  function buildNestedTimeline(events) {
+    var nodes = [];
+    // Stack of open agent_spawn events
+    var agentStack = [];
+
+    for (var i = 0; i < events.length; i++) {
+      var evt = events[i];
+      var type = evt.event_type;
+
+      if (type === 'agent_spawn') {
+        var node = { event: evt, children: [], depth: agentStack.length };
+        agentStack.push(node);
+        // Attach to parent or top level
+        if (agentStack.length > 1) {
+          agentStack[agentStack.length - 2].children.push(node);
+        } else {
+          nodes.push(node);
+        }
+      } else if (type === 'agent_complete') {
+        // Find matching agent on stack
+        var matched = false;
+        for (var j = agentStack.length - 1; j >= 0; j--) {
+          if (!evt.agent_id || agentStack[j].event.agent_id === evt.agent_id) {
+            var completedNode = { event: evt, children: null, depth: agentStack[j].depth };
+            agentStack[j].children.push(completedNode);
+            agentStack.splice(j, 1);
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) {
+          nodes.push({ event: evt, children: null, depth: 0 });
+        }
+      } else {
+        var leafNode = { event: evt, children: null, depth: agentStack.length };
+        if (agentStack.length > 0) {
+          agentStack[agentStack.length - 1].children.push(leafNode);
+        } else {
+          nodes.push(leafNode);
+        }
+      }
+    }
+
+    // Flush any unclosed agents
+    for (var k = agentStack.length - 1; k >= 0; k--) {
+      if (agentStack.length > 1) {
+        // already attached to parent — no action needed
+      } else {
+        // already at top level
+      }
+    }
+
+    return nodes;
+  }
+
+  // Render a single flat entry (non-agent-spawn or leaf)
+  function createLeafEl(node, flash) {
+    var event = node.event;
     var fmt = formatEvent(event);
-    var cls = 'tl-entry type-' + (event.event_type || 'unknown') + (flash ? ' tl-new' : '');
+    var depth = node.depth || 0;
+    var cls = 'tl-entry type-' + (event.event_type || 'unknown');
+    if (depth > 0) cls += ' depth-' + Math.min(depth, 2);
+    if (flash) cls += ' tl-new';
 
     var row = el('div', { className: cls }, [
       el('span', { className: 'tl-time' }, formatTime(event.timestamp)),
@@ -187,6 +260,49 @@
     return row;
   }
 
+  // Render an agent_spawn node as a collapsible group
+  function createAgentGroupEl(node, flash) {
+    var event = node.event;
+    var fmt = formatEvent(event);
+    var depth = node.depth || 0;
+    var headerCls = 'tl-entry type-agent_spawn tl-agent-header';
+    if (depth > 0) headerCls += ' depth-' + Math.min(depth, 2);
+    if (flash) headerCls += ' tl-new';
+
+    var collapseIcon = el('span', { className: 'tl-collapse-icon' }, '\u25BC');
+    var header = el('div', { className: headerCls }, [
+      el('span', { className: 'tl-time' }, formatTime(event.timestamp)),
+      el('span', { className: 'tl-icon' }, fmt.icon),
+      collapseIcon,
+      el('span', { className: 'tl-tag' }, fmt.tag),
+      el('span', { className: 'tl-content' }, fmt.content)
+    ]);
+
+    var childrenContainer = el('div', { className: 'tl-agent-children tl-nest-line' });
+    if (node.children && node.children.length > 0) {
+      for (var i = 0; i < node.children.length; i++) {
+        childrenContainer.appendChild(renderNode(node.children[i], false));
+      }
+    }
+
+    var group = el('div', { className: 'tl-agent-group' });
+    group.appendChild(header);
+    group.appendChild(childrenContainer);
+
+    header.addEventListener('click', function() {
+      group.classList.toggle('collapsed');
+    });
+
+    return group;
+  }
+
+  function renderNode(node, flash) {
+    if (node.children !== null) {
+      return createAgentGroupEl(node, flash);
+    }
+    return createLeafEl(node, flash);
+  }
+
   // Render full timeline from timelineEvents array
   function renderTimeline() {
     elTimeline.textContent = '';
@@ -194,19 +310,16 @@
       elTimeline.appendChild(el('div', { className: 'empty-state' }, 'No events yet'));
       return;
     }
-    for (var i = 0; i < timelineEvents.length; i++) {
-      elTimeline.appendChild(createEntryEl(timelineEvents[i], false));
+    var nodes = buildNestedTimeline(timelineEvents);
+    for (var i = 0; i < nodes.length; i++) {
+      elTimeline.appendChild(renderNode(nodes[i], false));
     }
     if (autoScroll) scrollToBottom();
   }
 
-  // Append a single event (real-time)
+  // Append a single event (real-time) — full re-render to maintain nesting integrity
   function appendEvent(event) {
-    // Remove empty-state if present
-    var empty = elTimeline.querySelector('.empty-state');
-    if (empty) empty.remove();
-
-    elTimeline.appendChild(createEntryEl(event, true));
+    renderTimeline();
     if (autoScroll) scrollToBottom();
   }
 
@@ -221,16 +334,69 @@
     timelineEvents = [];
     renderTimeline();
     highlightSelectedCard();
+    renderSessionTabs();
 
     fetch('/api/sessions/' + sessionId + '/events')
       .then(function(r) { return r.json(); })
       .then(function(events) {
         timelineEvents = events.map(normalizeEvent);
-        // Sort by timestamp
         timelineEvents.sort(function(a, b) { return (a.timestamp || 0) - (b.timestamp || 0); });
         renderTimeline();
       })
       .catch(function() {});
+  }
+
+  // Session Tabs
+  function ensureTab(sessionId) {
+    if (!sessionTabs[sessionId]) {
+      sessionTabs[sessionId] = { id: sessionId, eventCount: 0, ended: false };
+      tabOrder.push(sessionId);
+    }
+  }
+
+  function incrementTabCount(sessionId) {
+    ensureTab(sessionId);
+    sessionTabs[sessionId].eventCount++;
+  }
+
+  function markTabEnded(sessionId) {
+    if (sessionTabs[sessionId]) {
+      sessionTabs[sessionId].ended = true;
+    }
+  }
+
+  function renderSessionTabs() {
+    elSessionTabs.textContent = '';
+    if (tabOrder.length === 0) return;
+    for (var i = 0; i < tabOrder.length; i++) {
+      (function(sid) {
+        var tab = sessionTabs[sid];
+        var cls = 'session-tab';
+        if (sid === currentSessionId) cls += ' active';
+        if (tab.ended) cls += ' ended';
+        var badge = el('span', { className: 'session-tab-badge' }, String(tab.eventCount));
+        var btn = el('button', {
+          className: cls,
+          type: 'button',
+          onClick: function() { loadSession(sid); }
+        }, [
+          document.createTextNode(sid.substring(0, 12)),
+          badge
+        ]);
+        elSessionTabs.appendChild(btn);
+      })(tabOrder[i]);
+    }
+  }
+
+  function initTabsFromSessions(sessionsObj) {
+    if (!sessionsObj) return;
+    var sids = Object.keys(sessionsObj);
+    for (var i = 0; i < sids.length; i++) {
+      var s = sessionsObj[sids[i]];
+      ensureTab(sids[i]);
+      if (s.ended) markTabEnded(sids[i]);
+    }
+    renderSessionTabs();
   }
 
   // WebSocket
@@ -253,14 +419,14 @@
         if (data.type === 'snapshot') handleSnapshot(data);
         else if (data.type === 'event') handleEvent(data.event);
         else handleEvent(data);
-      } catch (e) { console.error('WS parse error:', e); }
+      } catch (e) { }
     };
   }
 
   function handleSnapshot(data) {
     if (data.stats) updateStats(data.stats);
-    // Auto-select the most recent active session
     if (data.sessions) {
+      initTabsFromSessions(data.sessions);
       var sids = Object.keys(data.sessions);
       var latest = null;
       var latestTime = 0;
@@ -281,12 +447,25 @@
     var sid = event.session_id;
     var type = event.event_type;
 
-    // Update session history on session start/end
-    if (type === 'session_start' || type === 'session_end') {
+    // Manage tabs
+    if (type === 'session_start') {
+      ensureTab(sid);
+      renderSessionTabs();
       refreshSessionHistory();
+      if (!currentSessionId) {
+        loadSession(sid);
+        return;
+      }
+    } else if (type === 'session_end') {
+      markTabEnded(sid);
+      renderSessionTabs();
+      refreshSessionHistory();
+    } else {
+      incrementTabCount(sid);
+      renderSessionTabs();
     }
 
-    // Auto-switch to new sessions
+    // Auto-switch to new sessions if none selected
     if (type === 'session_start' && !currentSessionId) {
       loadSession(sid);
       return;
@@ -339,11 +518,6 @@
   }
 
   function highlightSelectedCard() {
-    var cards = elHistoryCards.querySelectorAll('.history-card');
-    for (var i = 0; i < cards.length; i++) {
-      cards[i].classList.remove('selected');
-    }
-    // Re-render is simpler
     renderHistoryCards();
   }
 
@@ -358,28 +532,125 @@
     document.getElementById('stat-agents').textContent = s.agents_today || 0;
   }
 
-  // Usage bars
+  // Usage bars (plan-based)
   function refreshUsageBars() {
-    fetch('/api/usage/5h').then(function(r) { return r.json(); }).then(function(rows) {
-      var total = 0;
-      for (var i = 0; i < rows.length; i++) total += (rows[i].session_count || 0);
-      var maxSessions = 20;
-      var pct = Math.min(100, Math.round((total / maxSessions) * 100));
-      document.getElementById('usage-5h-fill').style.width = pct + '%';
-      document.getElementById('usage-5h-pct').textContent = pct + '%';
-      document.getElementById('usage-5h-value').textContent = total + ' sess';
-    }).catch(function() {});
-
-    fetch('/api/usage/weekly').then(function(r) { return r.json(); }).then(function(rows) {
-      var total = 0;
-      for (var i = 0; i < rows.length; i++) total += (rows[i].session_count || 0);
-      var maxWeekly = 100;
-      var pct = Math.min(100, Math.round((total / maxWeekly) * 100));
-      document.getElementById('usage-weekly-fill').style.width = pct + '%';
-      document.getElementById('usage-weekly-pct').textContent = pct + '%';
-      document.getElementById('usage-weekly-value').textContent = total + ' sess';
-    }).catch(function() {});
+    fetch('/api/usage/plan')
+      .then(function(r) { return r.json(); })
+      .then(function(rows) {
+        usagePlanData = {};
+        for (var i = 0; i < rows.length; i++) {
+          usagePlanData[rows[i].key] = rows[i];
+        }
+        renderUsageBars();
+      })
+      .catch(function() {});
   }
+
+  function renderUsageBars() {
+    var get = function(key) { return usagePlanData[key] || { value: 0, label: '' }; };
+
+    var sessionPct = Math.min(100, get('session_pct').value || 0);
+    document.getElementById('plan-session-fill').style.width = sessionPct + '%';
+    document.getElementById('plan-session-pct').textContent = sessionPct + '%';
+    document.getElementById('plan-session-reset').textContent = get('session_reset_label').label || 'Resets in --';
+
+    var weeklyAllPct = Math.min(100, get('weekly_all_pct').value || 0);
+    document.getElementById('plan-weekly-all-fill').style.width = weeklyAllPct + '%';
+    document.getElementById('plan-weekly-all-pct').textContent = weeklyAllPct + '%';
+    document.getElementById('plan-weekly-all-reset').textContent = get('weekly_all_reset_label').label || 'Resets Fri 7:00 AM';
+
+    var sonnetPct = Math.min(100, get('weekly_sonnet_pct').value || 0);
+    document.getElementById('plan-sonnet-fill').style.width = sonnetPct + '%';
+    document.getElementById('plan-sonnet-pct').textContent = sonnetPct + '%';
+    document.getElementById('plan-sonnet-reset').textContent = get('weekly_sonnet_reset_label').label || 'Resets Sat 5:00 PM';
+
+    var extraSpent = get('extra_spent').value || 0;
+    var extraLimit = get('extra_limit').value || 80;
+    var extraPct = extraLimit > 0 ? Math.min(100, Math.round((extraSpent / extraLimit) * 100)) : 0;
+    document.getElementById('plan-extra-fill').style.width = extraPct + '%';
+    document.getElementById('plan-extra-label').textContent = '$' + extraSpent.toFixed(2) + ' / $' + extraLimit;
+    document.getElementById('plan-extra-reset').textContent = get('extra_reset_label').label || 'Resets Apr 1';
+  }
+
+  // Usage modal
+  var modalFields = [
+    { key: 'session_pct', label: 'Current session %', isValue: true },
+    { key: 'session_reset_label', label: 'Session reset label', isLabel: true },
+    { key: 'weekly_all_pct', label: 'All models %', isValue: true },
+    { key: 'weekly_all_reset_label', label: 'All models reset label', isLabel: true },
+    { key: 'weekly_sonnet_pct', label: 'Sonnet only %', isValue: true },
+    { key: 'weekly_sonnet_reset_label', label: 'Sonnet reset label', isLabel: true },
+    { key: 'extra_spent', label: 'Extra spent ($)', isValue: true },
+    { key: 'extra_limit', label: 'Extra limit ($)', isValue: true },
+    { key: 'extra_reset_label', label: 'Extra reset label', isLabel: true }
+  ];
+
+  function openModal() {
+    elModalBody.textContent = '';
+    for (var i = 0; i < modalFields.length; i++) {
+      (function(field) {
+        var row = usagePlanData[field.key] || { value: 0, label: '' };
+        var inputVal = field.isLabel ? row.label : String(row.value);
+        var inputEl = el('input', {
+          type: field.isLabel ? 'text' : 'number',
+          value: inputVal,
+          'data-key': field.key,
+          'data-type': field.isLabel ? 'label' : 'value',
+          step: '0.01'
+        });
+        var fieldEl = el('div', { className: 'modal-field' }, [
+          el('label', {}, field.label),
+          inputEl
+        ]);
+        elModalBody.appendChild(fieldEl);
+      })(modalFields[i]);
+    }
+    elUsageModal.hidden = false;
+  }
+
+  function closeModal() {
+    elUsageModal.hidden = true;
+  }
+
+  function saveModal() {
+    var inputs = elModalBody.querySelectorAll('input');
+    var promises = [];
+    for (var i = 0; i < inputs.length; i++) {
+      var inp = inputs[i];
+      var key = inp.getAttribute('data-key');
+      var type = inp.getAttribute('data-type');
+      var currentRow = usagePlanData[key] || { value: 0, label: '' };
+      var body;
+      if (type === 'label') {
+        body = { key: key, value: currentRow.value, label: inp.value };
+      } else {
+        body = { key: key, value: parseFloat(inp.value) || 0, label: currentRow.label };
+      }
+      promises.push(
+        fetch('/api/usage/plan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        })
+      );
+    }
+    Promise.all(promises).then(function() {
+      closeModal();
+      refreshUsageBars();
+    }).catch(function() {
+      closeModal();
+    });
+  }
+
+  elGearBtn.addEventListener('click', openModal);
+  elModalClose.addEventListener('click', closeModal);
+  elModalSave.addEventListener('click', saveModal);
+  elUsageModal.addEventListener('click', function(e) {
+    if (e.target === elUsageModal) closeModal();
+  });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && !elUsageModal.hidden) closeModal();
+  });
 
   // Intervals
   setInterval(refreshUsageBars, 60000);

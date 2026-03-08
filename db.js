@@ -47,6 +47,33 @@ export async function initDb() {
   db.run('CREATE INDEX IF NOT EXISTS idx_events_agent_id ON events(agent_id)');
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS usage_manual (
+      key TEXT PRIMARY KEY,
+      value REAL DEFAULT 0,
+      label TEXT DEFAULT '',
+      updated_at INTEGER DEFAULT 0
+    )
+  `);
+
+  var defaultRows = [
+    ['session_pct', 0, 'Current session'],
+    ['session_reset_label', 0, 'Resets in --'],
+    ['weekly_all_pct', 0, 'All models'],
+    ['weekly_all_reset_label', 0, 'Resets Fri 7:00 AM'],
+    ['weekly_sonnet_pct', 0, 'Sonnet only'],
+    ['weekly_sonnet_reset_label', 0, 'Resets Sat 5:00 PM'],
+    ['extra_spent', 0, '$0.00'],
+    ['extra_limit', 80, '$80 limit'],
+    ['extra_reset_label', 0, 'Resets Apr 1']
+  ];
+  for (var ri = 0; ri < defaultRows.length; ri++) {
+    db.run(
+      'INSERT OR IGNORE INTO usage_manual (key, value, label, updated_at) VALUES (?, ?, ?, ?)',
+      [defaultRows[ri][0], defaultRows[ri][1], defaultRows[ri][2], Date.now()]
+    );
+  }
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS usage_hourly (
       hour_start INTEGER PRIMARY KEY,
       session_count INTEGER DEFAULT 0,
@@ -255,6 +282,24 @@ export function getStats() {
     tokens_24h: tokenCount || 0,
     agents_today: agentCount || 0
   };
+}
+
+export function getUsagePlan() {
+  var stmt = db.prepare('SELECT * FROM usage_manual ORDER BY key ASC');
+  var rows = [];
+  while (stmt.step()) {
+    rows.push(stmt.getAsObject());
+  }
+  stmt.free();
+  return rows;
+}
+
+export function setUsagePlan(key, value, label) {
+  db.run(
+    'UPDATE usage_manual SET value = ?, label = ?, updated_at = ? WHERE key = ?',
+    [value, label, Date.now(), key]
+  );
+  saveDb();
 }
 
 export function saveDb() {

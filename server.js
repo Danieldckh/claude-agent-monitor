@@ -18,6 +18,8 @@ import {
   updateHourlyUsage,
   updateSessionEnd,
   getStats,
+  getUsagePlan,
+  setUsagePlan,
   saveDb
 } from './db.js';
 
@@ -269,6 +271,27 @@ async function main() {
       res.json(getRecentEvents(limit));
     } catch (err) {
       res.status(500).json({ error: 'Failed to get recent events' });
+    }
+  });
+
+  app.get('/api/usage/plan', function(req, res) {
+    try {
+      res.json(getUsagePlan());
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to get plan usage data' });
+    }
+  });
+
+  app.post('/api/usage/plan', function(req, res) {
+    try {
+      var key = req.body.key;
+      var value = req.body.value !== undefined ? req.body.value : 0;
+      var label = req.body.label !== undefined ? req.body.label : '';
+      if (!key) return res.status(400).json({ error: 'key required' });
+      setUsagePlan(key, value, label);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to update plan usage data' });
     }
   });
 
