@@ -12,6 +12,7 @@
   var elConnectionDot = document.getElementById('connection-status');
   var elConnectionLabel = document.getElementById('connection-label');
   var elSessionLabel = document.getElementById('active-session-label');
+  var elHistoryCards = document.getElementById('history-cards');
 
   // Utilities
   function formatDuration(seconds) {
@@ -31,6 +32,18 @@
     if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
     if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
     return String(n);
+  }
+
+  function formatTime(ts) {
+    if (!ts) return '';
+    var d = new Date(ts);
+    var now = new Date();
+    var time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (d.toDateString() === now.toDateString()) return 'Today ' + time;
+    var yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    if (d.toDateString() === yesterday.toDateString()) return 'Yesterday ' + time;
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + time;
   }
 
   function nowMs() { return Date.now(); }
@@ -97,6 +110,7 @@
     if (data.stats) updateStats(data.stats);
     renderTree();
     refreshUsageBars();
+    refreshSessionHistory();
   }
 
   function handleEvent(event) {
@@ -106,8 +120,10 @@
     if (type === 'session_start') {
       sessions[sid] = { id: sid, startTime: event.timestamp, workingDir: event.working_dir || '', ended: false, agents: {} };
       activeTabSession = sid;
+      refreshSessionHistory();
     } else if (type === 'session_end') {
       if (sessions[sid]) { sessions[sid].ended = true; sessions[sid].endTime = event.timestamp; }
+      refreshSessionHistory();
     } else if (type === 'agent_spawn') {
       if (sessions[sid]) {
         sessions[sid].agents[event.agent_id] = {
@@ -201,7 +217,7 @@
   function buildSessionNode(session) {
     var nid = session.id;
     var icon = session.ended ? '\u2705' : '\uD83D\uDD04';
-    var elapsed = formatDuration(Math.round((( session.ended ? session.endTime : nowMs()) - session.startTime) / 1000));
+    var elapsed = formatDuration(Math.round(((session.ended ? session.endTime : nowMs()) - session.startTime) / 1000));
 
     var toggle = el('span', { className: 'tree-toggle', textContent: '\u25BC' });
     toggle.addEventListener('click', function(e) { e.stopPropagation(); toggleNode(nid); });
@@ -215,7 +231,6 @@
 
     var kids = el('div', { className: 'tree-children', id: 'children-' + nid });
 
-    // Show inline detail if selected
     if (selectedNodeId === nid) {
       kids.appendChild(el('div', { className: 'tree-detail' },
         'Working dir: ' + (session.workingDir || 'N/A') + '\nStarted: ' + new Date(session.startTime).toLocaleString() +
@@ -261,7 +276,6 @@
 
     var kids = el('div', { className: 'tree-children', id: 'children-' + nid.replace(/[^a-zA-Z0-9-]/g, '_') });
 
-    // Inline detail when selected (replaces bottom panel)
     if (selectedNodeId === nid) {
       var lines = [];
       lines.push('Type: ' + (agent.type || 'unknown'));
@@ -300,7 +314,7 @@
       ]));
     }
 
-    // Last 5 thoughts (inline in tree)
+    // Last 5 thoughts
     var start = Math.max(0, agent.thoughts.length - 5);
     for (var i = start; i < agent.thoughts.length; i++) {
       var text = agent.thoughts[i].text || '';
@@ -328,14 +342,15 @@
     if (childEl) childEl.classList.toggle('collapsed');
   }
 
-  // Usage bars
+  // Usage bars with percentage
   function refreshUsageBars() {
     fetch('/api/usage/5h').then(function(r) { return r.json(); }).then(function(rows) {
       var total = 0;
       for (var i = 0; i < rows.length; i++) total += (rows[i].session_count || 0);
-      var maxSessions = 20; // reasonable 5h max
+      var maxSessions = 20;
       var pct = Math.min(100, Math.round((total / maxSessions) * 100));
       document.getElementById('usage-5h-fill').style.width = pct + '%';
+      document.getElementById('usage-5h-pct').textContent = pct + '%';
       document.getElementById('usage-5h-value').textContent = total + ' sess';
     }).catch(function() {});
 
@@ -345,7 +360,38 @@
       var maxWeekly = 100;
       var pct = Math.min(100, Math.round((total / maxWeekly) * 100));
       document.getElementById('usage-weekly-fill').style.width = pct + '%';
+      document.getElementById('usage-weekly-pct').textContent = pct + '%';
       document.getElementById('usage-weekly-value').textContent = total + ' sess';
+    }).catch(function() {});
+  }
+
+  // Session history cards
+  function refreshSessionHistory() {
+    fetch('/api/sessions/history?limit=50').then(function(r) { return r.json(); }).then(function(rows) {
+      elHistoryCards.textContent = '';
+      if (rows.length === 0) {
+        elHistoryCards.appendChild(el('div', { className: 'empty-state', style: 'height:80px;font-size:11px;' }, 'No sessions yet'));
+        return;
+      }
+      for (var i = 0; i < rows.length; i++) {
+        (function(s) {
+          var isActive = !s.end_time;
+          var card = el('div', {
+            className: 'history-card ' + (isActive ? 'active-session' : 'ended-session'),
+            onClick: function() {
+              if (sessions[s.id]) {
+                activeTabSession = s.id;
+                renderTabs();
+                renderTree();
+              }
+            }
+          }, [
+            el('div', { className: 'history-card-name' }, s.id.substring(0, 16)),
+            el('div', { className: 'history-card-time' }, formatTime(s.start_time))
+          ]);
+          elHistoryCards.appendChild(card);
+        })(rows[i]);
+      }
     }).catch(function() {});
   }
 
@@ -378,9 +424,11 @@
     }
   }, 2000);
   setInterval(refreshUsageBars, 60000);
+  setInterval(refreshSessionHistory, 30000);
 
   // Init
   connect();
   refreshUsageBars();
   fetchStats();
+  refreshSessionHistory();
 })();

@@ -139,6 +139,18 @@ export function getSessionEvents(sessionId) {
   return rows;
 }
 
+export function getAllSessions(limit) {
+  var n = limit || 50;
+  var stmt = db.prepare('SELECT * FROM sessions ORDER BY start_time DESC LIMIT ?');
+  stmt.bind([n]);
+  var rows = [];
+  while (stmt.step()) {
+    rows.push(stmt.getAsObject());
+  }
+  stmt.free();
+  return rows;
+}
+
 export function getActiveSessions() {
   var result = db.exec('SELECT * FROM sessions WHERE end_time IS NULL ORDER BY start_time DESC');
   if (result.length === 0) return [];

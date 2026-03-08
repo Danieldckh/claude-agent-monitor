@@ -14,6 +14,7 @@ import {
   getRecentEvents,
   getSessionEvents,
   getActiveSessions,
+  getAllSessions,
   updateHourlyUsage,
   updateSessionEnd,
   getStats,
@@ -53,8 +54,25 @@ function sessionsToObject(sessionsMap) {
   return obj;
 }
 
+function restoreSessionsFromDb() {
+  var dbSessions = getActiveSessions();
+  for (var i = 0; i < dbSessions.length; i++) {
+    var s = dbSessions[i];
+    if (!activeSessions.has(s.id)) {
+      activeSessions.set(s.id, {
+        id: s.id,
+        startTime: s.start_time,
+        workingDir: s.working_dir || null,
+        agents: new Map()
+      });
+    }
+  }
+  console.log('Restored ' + dbSessions.length + ' active sessions from DB');
+}
+
 async function main() {
   await initDb();
+  restoreSessionsFromDb();
 
   var app = express();
   app.use(cors());
@@ -225,6 +243,15 @@ async function main() {
       res.json(getActiveSessions());
     } catch (err) {
       res.status(500).json({ error: 'Failed to get sessions' });
+    }
+  });
+
+  app.get('/api/sessions/history', function(req, res) {
+    try {
+      var limit = parseInt(req.query.limit, 10) || 50;
+      res.json(getAllSessions(limit));
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to get session history' });
     }
   });
 

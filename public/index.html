@@ -26,16 +26,20 @@
     <div class="usage-track">
       <span class="usage-label">5h</span>
       <div class="usage-progress">
-        <div class="usage-fill" id="usage-5h-fill" style="width: 0%"></div>
+        <div class="usage-fill" id="usage-5h-fill" style="width: 0%">
+          <span class="usage-pct" id="usage-5h-pct">0%</span>
+        </div>
       </div>
-      <span class="usage-value" id="usage-5h-value">0%</span>
+      <span class="usage-value" id="usage-5h-value">0 sess</span>
     </div>
     <div class="usage-track">
       <span class="usage-label">7d</span>
       <div class="usage-progress">
-        <div class="usage-fill weekly" id="usage-weekly-fill" style="width: 0%"></div>
+        <div class="usage-fill weekly" id="usage-weekly-fill" style="width: 0%">
+          <span class="usage-pct" id="usage-weekly-pct">0%</span>
+        </div>
       </div>
-      <span class="usage-value" id="usage-weekly-value">0%</span>
+      <span class="usage-value" id="usage-weekly-value">0 sess</span>
     </div>
   </div>
 
@@ -49,7 +53,13 @@
 
   <div id="session-tabs"></div>
 
-  <main id="agent-tree"></main>
+  <div id="main-layout">
+    <main id="agent-tree"></main>
+    <aside id="session-history">
+      <div class="history-header">Session History</div>
+      <div id="history-cards"></div>
+    </aside>
+  </div>
 
   <script src="app.js"></script>
 </body>
