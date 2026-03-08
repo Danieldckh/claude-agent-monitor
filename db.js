@@ -141,7 +141,12 @@ export function getSessionEvents(sessionId) {
 
 export function getAllSessions(limit) {
   var n = limit || 50;
-  var stmt = db.prepare('SELECT * FROM sessions ORDER BY start_time DESC LIMIT ?');
+  var stmt = db.prepare(`
+    SELECT s.*, COALESCE(e.cnt, 0) AS event_count
+    FROM sessions s
+    LEFT JOIN (SELECT session_id, COUNT(*) AS cnt FROM events GROUP BY session_id) e ON e.session_id = s.id
+    ORDER BY s.start_time DESC LIMIT ?
+  `);
   stmt.bind([n]);
   var rows = [];
   while (stmt.step()) {

@@ -43,20 +43,19 @@
     </div>
   </div>
 
-  <div id="tree-toolbar">
-    <span id="active-session-label">No active sessions</span>
-    <div class="toolbar-actions">
-      <button id="expand-all-btn" title="Expand all">+</button>
-      <button id="collapse-all-btn" title="Collapse all">-</button>
-    </div>
-  </div>
-
-  <div id="session-tabs"></div>
-
   <div id="main-layout">
-    <main id="agent-tree"></main>
+    <div id="session-timeline">
+      <div class="timeline-header">
+        <span id="timeline-session-label">No session selected</span>
+        <label class="auto-scroll-toggle">
+          <input type="checkbox" id="auto-scroll-check" checked>
+          Auto-scroll
+        </label>
+      </div>
+      <div id="timeline-entries"></div>
+    </div>
     <aside id="session-history">
-      <div class="history-header">Session History</div>
+      <div class="history-header">Sessions</div>
       <div id="history-cards"></div>
     </aside>
   </div>

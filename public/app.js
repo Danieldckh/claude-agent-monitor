@@ -1,22 +1,60 @@
 (function() {
   'use strict';
 
-  var sessions = {};
-  var selectedNodeId = null;
-  var activeTabSession = 'all';
+  // State
+  var currentSessionId = null;
+  var timelineEvents = [];
+  var autoScroll = true;
   var ws = null;
   var reconnectTimer = null;
+  var sessionHistory = [];
 
-  var elTabs = document.getElementById('session-tabs');
-  var elTree = document.getElementById('agent-tree');
+  // Elements
+  var elTimeline = document.getElementById('timeline-entries');
+  var elSessionLabel = document.getElementById('timeline-session-label');
+  var elAutoScroll = document.getElementById('auto-scroll-check');
   var elConnectionDot = document.getElementById('connection-status');
   var elConnectionLabel = document.getElementById('connection-label');
-  var elSessionLabel = document.getElementById('active-session-label');
   var elHistoryCards = document.getElementById('history-cards');
 
+  // Auto-scroll checkbox
+  elAutoScroll.addEventListener('change', function() { autoScroll = elAutoScroll.checked; });
+
+  // Detect manual scroll-up to disable auto-scroll
+  elTimeline.addEventListener('scroll', function() {
+    var atBottom = elTimeline.scrollHeight - elTimeline.scrollTop - elTimeline.clientHeight < 40;
+    if (!atBottom && autoScroll) {
+      autoScroll = false;
+      elAutoScroll.checked = false;
+    } else if (atBottom && !autoScroll) {
+      autoScroll = true;
+      elAutoScroll.checked = true;
+    }
+  });
+
   // Utilities
+  function formatTime(ts) {
+    if (!ts) return '';
+    var d = new Date(ts);
+    var h = d.getHours().toString().padStart(2, '0');
+    var m = d.getMinutes().toString().padStart(2, '0');
+    return h + ':' + m;
+  }
+
+  function formatTimeCard(ts) {
+    if (!ts) return '';
+    var d = new Date(ts);
+    var now = new Date();
+    var time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (d.toDateString() === now.toDateString()) return 'Today ' + time;
+    var yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    if (d.toDateString() === yesterday.toDateString()) return 'Yesterday ' + time;
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + time;
+  }
+
   function formatDuration(seconds) {
-    if (seconds == null || isNaN(seconds)) return '0s';
+    if (seconds == null || isNaN(seconds)) return '';
     seconds = Math.round(seconds);
     if (seconds < 60) return seconds + 's';
     var m = Math.floor(seconds / 60);
@@ -33,20 +71,6 @@
     if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
     return String(n);
   }
-
-  function formatTime(ts) {
-    if (!ts) return '';
-    var d = new Date(ts);
-    var now = new Date();
-    var time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    if (d.toDateString() === now.toDateString()) return 'Today ' + time;
-    var yesterday = new Date(now);
-    yesterday.setDate(yesterday.getDate() - 1);
-    if (d.toDateString() === yesterday.toDateString()) return 'Yesterday ' + time;
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + time;
-  }
-
-  function nowMs() { return Date.now(); }
 
   function el(tag, attrs, children) {
     var node = document.createElement(tag);
@@ -74,6 +98,123 @@
     return node;
   }
 
+  // Event formatting
+  function formatEvent(event) {
+    var type = event.event_type;
+    var icon = '';
+    var tag = '';
+    var content = '';
+
+    if (type === 'user_prompt') {
+      icon = '\u{1F4AC}';
+      tag = 'USER';
+      content = event.payload || '';
+    } else if (type === 'tool_call') {
+      icon = '\u2192';
+      var parsed = tryParsePayload(event.payload);
+      tag = parsed.tool || 'TOOL';
+      content = parsed.input || '';
+    } else if (type === 'tool_result') {
+      icon = '\u2190';
+      var parsed = tryParsePayload(event.payload);
+      tag = parsed.tool || 'RESULT';
+      content = parsed.result || '';
+    } else if (type === 'agent_spawn') {
+      icon = '\u{1F680}';
+      tag = event.agent_type || 'AGENT';
+      content = event.prompt || event.payload || '';
+    } else if (type === 'agent_complete') {
+      icon = '\u2713';
+      tag = 'DONE';
+      var dur = event.duration_seconds ? ' (' + formatDuration(event.duration_seconds) + ')' : '';
+      content = (event.agent_id || '') + dur;
+      if (event.result) content += '\n' + event.result.substring(0, 200);
+    } else if (type === 'task_update') {
+      icon = '\u{1F4CB}';
+      tag = event.status || 'TASK';
+      content = event.subject || event.payload || '';
+    } else if (type === 'session_start') {
+      icon = '\u25CF';
+      tag = 'START';
+      content = 'Session started' + (event.working_dir ? ' \u2014 ' + event.working_dir : '');
+    } else if (type === 'session_end') {
+      icon = '\u25CB';
+      tag = 'END';
+      content = 'Session ended';
+    } else {
+      icon = '\u2022';
+      tag = type || '?';
+      content = event.payload || JSON.stringify(event);
+    }
+
+    return { icon: icon, tag: tag, content: content };
+  }
+
+  function tryParsePayload(payload) {
+    if (!payload) return {};
+    try { return JSON.parse(payload); } catch (e) { return { tool: '', input: payload, result: payload }; }
+  }
+
+  // Render a single timeline entry DOM element
+  function createEntryEl(event, flash) {
+    var fmt = formatEvent(event);
+    var cls = 'tl-entry type-' + (event.event_type || 'unknown') + (flash ? ' tl-new' : '');
+
+    var row = el('div', { className: cls }, [
+      el('span', { className: 'tl-time' }, formatTime(event.timestamp)),
+      el('span', { className: 'tl-icon' }, fmt.icon),
+      el('span', { className: 'tl-tag' }, fmt.tag),
+      el('span', { className: 'tl-content' }, fmt.content)
+    ]);
+    return row;
+  }
+
+  // Render full timeline from timelineEvents array
+  function renderTimeline() {
+    elTimeline.textContent = '';
+    if (timelineEvents.length === 0) {
+      elTimeline.appendChild(el('div', { className: 'empty-state' }, 'No events yet'));
+      return;
+    }
+    for (var i = 0; i < timelineEvents.length; i++) {
+      elTimeline.appendChild(createEntryEl(timelineEvents[i], false));
+    }
+    if (autoScroll) scrollToBottom();
+  }
+
+  // Append a single event (real-time)
+  function appendEvent(event) {
+    // Remove empty-state if present
+    var empty = elTimeline.querySelector('.empty-state');
+    if (empty) empty.remove();
+
+    elTimeline.appendChild(createEntryEl(event, true));
+    if (autoScroll) scrollToBottom();
+  }
+
+  function scrollToBottom() {
+    elTimeline.scrollTop = elTimeline.scrollHeight;
+  }
+
+  // Load a session's events
+  function loadSession(sessionId) {
+    currentSessionId = sessionId;
+    elSessionLabel.textContent = 'Session ' + sessionId.substring(0, 16);
+    timelineEvents = [];
+    renderTimeline();
+    highlightSelectedCard();
+
+    fetch('/api/sessions/' + sessionId + '/events')
+      .then(function(r) { return r.json(); })
+      .then(function(events) {
+        timelineEvents = events;
+        // Sort by timestamp
+        timelineEvents.sort(function(a, b) { return (a.timestamp || 0) - (b.timestamp || 0); });
+        renderTimeline();
+      })
+      .catch(function() {});
+  }
+
   // WebSocket
   function connect() {
     var protocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
@@ -99,250 +240,107 @@
   }
 
   function handleSnapshot(data) {
-    sessions = {};
+    if (data.stats) updateStats(data.stats);
+    // Auto-select the most recent active session
     if (data.sessions) {
-      var keys = Object.keys(data.sessions);
-      for (var i = 0; i < keys.length; i++) {
-        var s = data.sessions[keys[i]];
-        sessions[keys[i]] = { id: s.id, startTime: s.startTime, workingDir: s.workingDir || '', ended: false, agents: s.agents || {} };
+      var sids = Object.keys(data.sessions);
+      var latest = null;
+      var latestTime = 0;
+      for (var i = 0; i < sids.length; i++) {
+        var s = data.sessions[sids[i]];
+        var t = s.startTime || s.start_time || 0;
+        if (!s.ended && t > latestTime) { latest = sids[i]; latestTime = t; }
+      }
+      if (latest && !currentSessionId) {
+        loadSession(latest);
       }
     }
-    if (data.stats) updateStats(data.stats);
-    renderTree();
     refreshUsageBars();
     refreshSessionHistory();
   }
 
   function handleEvent(event) {
-    var type = event.event_type;
     var sid = event.session_id;
+    var type = event.event_type;
 
-    if (type === 'session_start') {
-      sessions[sid] = { id: sid, startTime: event.timestamp, workingDir: event.working_dir || '', ended: false, agents: {} };
-      activeTabSession = sid;
+    // Update session history on session start/end
+    if (type === 'session_start' || type === 'session_end') {
       refreshSessionHistory();
-    } else if (type === 'session_end') {
-      if (sessions[sid]) { sessions[sid].ended = true; sessions[sid].endTime = event.timestamp; }
-      refreshSessionHistory();
-    } else if (type === 'agent_spawn') {
-      if (sessions[sid]) {
-        sessions[sid].agents[event.agent_id] = {
-          id: event.agent_id, type: event.agent_type || 'unknown',
-          parentAgentId: event.parent_agent_id || null, status: 'running',
-          startTime: event.timestamp, endTime: null, duration: null,
-          thoughts: [], tasks: [], prompt: event.prompt || event.payload || '', result: null, error: null
-        };
-      }
-    } else if (type === 'agent_output') {
-      if (sessions[sid] && sessions[sid].agents[event.agent_id]) {
-        sessions[sid].agents[event.agent_id].thoughts.push({ text: event.text || event.payload || '', timestamp: event.timestamp });
-      }
-    } else if (type === 'agent_complete') {
-      if (sessions[sid] && sessions[sid].agents[event.agent_id]) {
-        var a = sessions[sid].agents[event.agent_id];
-        a.status = 'completed'; a.endTime = event.timestamp;
-        a.duration = event.duration_seconds || Math.round((event.timestamp - a.startTime) / 1000);
-        a.result = event.result || event.payload || '';
-      }
-    } else if (type === 'agent_error') {
-      if (sessions[sid] && sessions[sid].agents[event.agent_id]) {
-        sessions[sid].agents[event.agent_id].status = 'error';
-        sessions[sid].agents[event.agent_id].error = event.error || event.payload || '';
-      }
-    } else if (type === 'task_update') {
-      if (sessions[sid] && event.agent_id && sessions[sid].agents[event.agent_id]) {
-        sessions[sid].agents[event.agent_id].tasks.push({
-          taskId: event.task_id, status: event.status || 'pending',
-          subject: event.subject || event.payload || '', timestamp: event.timestamp
-        });
-      }
     }
-    renderTree();
-    fetchStats();
-  }
 
-  // Tab rendering
-  function renderTabs() {
-    elTabs.textContent = '';
-    var sids = Object.keys(sessions);
-    if (sids.length === 0) return;
-
-    var allTab = el('div', {
-      className: 'session-tab' + (activeTabSession === 'all' ? ' active' : ''),
-      onClick: function() { activeTabSession = 'all'; renderTabs(); renderTree(); }
-    }, 'All');
-    elTabs.appendChild(allTab);
-
-    for (var i = 0; i < sids.length; i++) {
-      (function(sid) {
-        var s = sessions[sid];
-        var agentCount = Object.keys(s.agents).length;
-        var cls = 'session-tab' + (activeTabSession === sid ? ' active' : '') + (s.ended ? ' ended' : '');
-        var tab = el('div', {
-          className: cls,
-          onClick: function() { activeTabSession = sid; renderTabs(); renderTree(); }
-        }, [
-          document.createTextNode(sid.substring(0, 8)),
-          agentCount > 0 ? el('span', { className: 'tab-badge' }, String(agentCount)) : null
-        ].filter(Boolean));
-        elTabs.appendChild(tab);
-      })(sids[i]);
-    }
-  }
-
-  // Tree rendering
-  function renderTree() {
-    var sids = Object.keys(sessions);
-    if (activeTabSession !== 'all') {
-      sids = sids.filter(function(s) { return s === activeTabSession; });
-    }
-    renderTabs();
-    elTree.textContent = '';
-
-    if (sids.length === 0) {
-      elTree.appendChild(el('div', { className: 'empty-state' }, 'Waiting for Claude Code events...'));
-      elSessionLabel.textContent = 'No active sessions';
+    // Auto-switch to new sessions
+    if (type === 'session_start' && !currentSessionId) {
+      loadSession(sid);
       return;
     }
 
-    var active = 0;
-    for (var i = 0; i < sids.length; i++) { if (!sessions[sids[i]].ended) active++; }
-    elSessionLabel.textContent = active + ' active session' + (active !== 1 ? 's' : '');
+    // If this event belongs to the currently viewed session, append it
+    if (sid === currentSessionId) {
+      timelineEvents.push(event);
+      appendEvent(event);
+    }
 
-    for (var i = 0; i < sids.length; i++) {
-      elTree.appendChild(buildSessionNode(sessions[sids[i]]));
+    fetchStats();
+  }
+
+  // Session history cards
+  function refreshSessionHistory() {
+    fetch('/api/sessions/history?limit=50')
+      .then(function(r) { return r.json(); })
+      .then(function(rows) {
+        sessionHistory = rows;
+        renderHistoryCards();
+      })
+      .catch(function() {});
+  }
+
+  function renderHistoryCards() {
+    elHistoryCards.textContent = '';
+    if (sessionHistory.length === 0) {
+      elHistoryCards.appendChild(el('div', { className: 'empty-state', style: 'height:80px;font-size:11px;' }, 'No sessions yet'));
+      return;
+    }
+    for (var i = 0; i < sessionHistory.length; i++) {
+      (function(s) {
+        var isActive = !s.end_time;
+        var isSelected = currentSessionId === s.id;
+        var cls = 'history-card ' + (isActive ? 'active-session' : 'ended-session') + (isSelected ? ' selected' : '');
+        var card = el('div', {
+          className: cls,
+          onClick: function() { loadSession(s.id); }
+        }, [
+          el('div', { className: 'history-card-name' }, s.id.substring(0, 20)),
+          el('div', { className: 'history-card-meta' }, [
+            el('span', { className: 'history-card-time' }, formatTimeCard(s.start_time)),
+            el('span', { className: 'history-card-count' }, (s.event_count || 0) + ' events')
+          ])
+        ]);
+        elHistoryCards.appendChild(card);
+      })(sessionHistory[i]);
     }
   }
 
-  function buildSessionNode(session) {
-    var nid = session.id;
-    var icon = session.ended ? '\u2705' : '\uD83D\uDD04';
-    var elapsed = formatDuration(Math.round(((session.ended ? session.endTime : nowMs()) - session.startTime) / 1000));
-
-    var toggle = el('span', { className: 'tree-toggle', textContent: '\u25BC' });
-    toggle.addEventListener('click', function(e) { e.stopPropagation(); toggleNode(nid); });
-
-    var header = el('div', { className: 'tree-node-header' + (selectedNodeId === nid ? ' selected' : '') }, [
-      toggle, el('span', { className: 'tree-icon' }, icon),
-      el('span', { className: 'tree-label' }, 'Session ' + nid.substring(0, 12)),
-      el('span', { className: 'tree-duration' }, elapsed)
-    ]);
-    header.addEventListener('click', function() { selectNode(nid); });
-
-    var kids = el('div', { className: 'tree-children', id: 'children-' + nid });
-
-    if (selectedNodeId === nid) {
-      kids.appendChild(el('div', { className: 'tree-detail' },
-        'Working dir: ' + (session.workingDir || 'N/A') + '\nStarted: ' + new Date(session.startTime).toLocaleString() +
-        '\nAgents: ' + Object.keys(session.agents).length
-      ));
+  function highlightSelectedCard() {
+    var cards = elHistoryCards.querySelectorAll('.history-card');
+    for (var i = 0; i < cards.length; i++) {
+      cards[i].classList.remove('selected');
     }
-
-    var agentKeys = Object.keys(session.agents);
-    var rootAgents = agentKeys.filter(function(aid) {
-      var a = session.agents[aid];
-      return !a.parentAgentId || !session.agents[a.parentAgentId];
-    });
-
-    for (var j = 0; j < rootAgents.length; j++) {
-      kids.appendChild(buildAgentNode(session, rootAgents[j], agentKeys));
-    }
-
-    return el('div', { className: 'tree-node root', 'data-node-id': nid }, [header, kids]);
+    // Re-render is simpler
+    renderHistoryCards();
   }
 
-  function buildAgentNode(session, agentId, allKeys) {
-    var agent = session.agents[agentId];
-    if (!agent) return document.createTextNode('');
-
-    var nid = session.id + '::' + agentId;
-    var icon = agent.status === 'running' ? '\uD83D\uDD04' : agent.status === 'completed' ? '\u2705' : agent.status === 'error' ? '\u274C' : '\u23F8';
-    var dur = agent.duration ? formatDuration(agent.duration) : (agent.status === 'running' ? formatDuration(Math.round((nowMs() - agent.startTime) / 1000)) : '');
-
-    var childKeys = allKeys.filter(function(k) { return session.agents[k] && session.agents[k].parentAgentId === agentId; });
-    var hasContent = childKeys.length > 0 || agent.thoughts.length > 0 || agent.tasks.length > 0 || selectedNodeId === nid;
-
-    var toggle = el('span', { className: 'tree-toggle', textContent: hasContent ? '\u25BC' : ' ' });
-    if (hasContent) {
-      (function(id) { toggle.addEventListener('click', function(e) { e.stopPropagation(); toggleNode(id); }); })(nid);
-    }
-
-    var header = el('div', { className: 'tree-node-header' + (selectedNodeId === nid ? ' selected' : '') }, [
-      toggle, el('span', { className: 'tree-icon' }, icon),
-      el('span', { className: 'tree-label' }, agent.type || agentId),
-      dur ? el('span', { className: 'tree-duration' }, dur) : null
-    ].filter(Boolean));
-    (function(id) { header.addEventListener('click', function() { selectNode(id); }); })(nid);
-
-    var kids = el('div', { className: 'tree-children', id: 'children-' + nid.replace(/[^a-zA-Z0-9-]/g, '_') });
-
-    if (selectedNodeId === nid) {
-      var lines = [];
-      lines.push('Type: ' + (agent.type || 'unknown'));
-      lines.push('Status: ' + agent.status);
-      if (agent.startTime) lines.push('Started: ' + new Date(agent.startTime).toLocaleString());
-      if (agent.duration) lines.push('Duration: ' + formatDuration(agent.duration));
-
-      var detailDiv = el('div', { className: 'tree-detail' });
-      detailDiv.appendChild(el('div', {}, lines.join('\n')));
-
-      if (agent.prompt) {
-        detailDiv.appendChild(el('div', { className: 'detail-prompt' }, '\n--- Prompt ---\n' + agent.prompt));
-      }
-      if (agent.result) {
-        detailDiv.appendChild(el('div', { className: 'detail-result' }, '\n--- Result ---\n' + agent.result));
-      }
-      if (agent.error) {
-        detailDiv.appendChild(el('div', { className: 'detail-error' }, '\n--- Error ---\n' + agent.error));
-      }
-      if (agent.thoughts.length > 0) {
-        var thoughtsDiv = el('div', {}, '\n--- Thoughts (' + agent.thoughts.length + ') ---');
-        for (var t = 0; t < agent.thoughts.length; t++) {
-          thoughtsDiv.appendChild(document.createTextNode('\n[' + new Date(agent.thoughts[t].timestamp).toLocaleTimeString() + '] ' + agent.thoughts[t].text));
-        }
-        detailDiv.appendChild(thoughtsDiv);
-      }
-      kids.appendChild(detailDiv);
-    }
-
-    // Tasks
-    for (var i = 0; i < agent.tasks.length; i++) {
-      var task = agent.tasks[i];
-      kids.appendChild(el('div', { className: 'tree-task' }, [
-        el('span', { className: 'task-badge ' + (task.status || 'pending') }, task.status || 'pending'),
-        document.createTextNode(' ' + (task.subject || ''))
-      ]));
-    }
-
-    // Last 5 thoughts
-    var start = Math.max(0, agent.thoughts.length - 5);
-    for (var i = start; i < agent.thoughts.length; i++) {
-      var text = agent.thoughts[i].text || '';
-      if (text.length > 200) text = text.substring(0, 200) + '...';
-      kids.appendChild(el('div', { className: 'tree-thought', textContent: text }));
-    }
-
-    // Child agents
-    for (var i = 0; i < childKeys.length; i++) {
-      kids.appendChild(buildAgentNode(session, childKeys[i], allKeys));
-    }
-
-    return el('div', { className: 'tree-node', 'data-node-id': nid }, [header, kids]);
+  // Stats
+  function fetchStats() {
+    fetch('/api/stats').then(function(r) { return r.json(); }).then(function(s) { updateStats(s); }).catch(function() {});
   }
 
-  // Selection
-  function selectNode(nid) {
-    selectedNodeId = (selectedNodeId === nid) ? null : nid;
-    renderTree();
+  function updateStats(s) {
+    document.getElementById('stat-sessions').textContent = s.sessions_today || 0;
+    document.getElementById('stat-tokens').textContent = formatNumber(s.est_tokens_24h || s.tokens_24h || 0);
+    document.getElementById('stat-agents').textContent = s.agents_today || 0;
   }
 
-  function toggleNode(nid) {
-    var safeId = 'children-' + nid.replace(/[^a-zA-Z0-9-]/g, '_');
-    var childEl = document.getElementById(safeId);
-    if (childEl) childEl.classList.toggle('collapsed');
-  }
-
-  // Usage bars with percentage
+  // Usage bars
   function refreshUsageBars() {
     fetch('/api/usage/5h').then(function(r) { return r.json(); }).then(function(rows) {
       var total = 0;
@@ -365,64 +363,7 @@
     }).catch(function() {});
   }
 
-  // Session history cards
-  function refreshSessionHistory() {
-    fetch('/api/sessions/history?limit=50').then(function(r) { return r.json(); }).then(function(rows) {
-      elHistoryCards.textContent = '';
-      if (rows.length === 0) {
-        elHistoryCards.appendChild(el('div', { className: 'empty-state', style: 'height:80px;font-size:11px;' }, 'No sessions yet'));
-        return;
-      }
-      for (var i = 0; i < rows.length; i++) {
-        (function(s) {
-          var isActive = !s.end_time;
-          var card = el('div', {
-            className: 'history-card ' + (isActive ? 'active-session' : 'ended-session'),
-            onClick: function() {
-              if (sessions[s.id]) {
-                activeTabSession = s.id;
-                renderTabs();
-                renderTree();
-              }
-            }
-          }, [
-            el('div', { className: 'history-card-name' }, s.id.substring(0, 16)),
-            el('div', { className: 'history-card-time' }, formatTime(s.start_time))
-          ]);
-          elHistoryCards.appendChild(card);
-        })(rows[i]);
-      }
-    }).catch(function() {});
-  }
-
-  // Stats
-  function fetchStats() {
-    fetch('/api/stats').then(function(r) { return r.json(); }).then(function(s) { updateStats(s); }).catch(function() {});
-  }
-
-  function updateStats(s) {
-    document.getElementById('stat-sessions').textContent = s.sessions_today || 0;
-    document.getElementById('stat-tokens').textContent = formatNumber(s.est_tokens_24h || s.tokens_24h || 0);
-    document.getElementById('stat-agents').textContent = s.agents_today || 0;
-  }
-
-  // Toolbar
-  document.getElementById('collapse-all-btn').addEventListener('click', function() {
-    var all = elTree.querySelectorAll('.tree-children');
-    for (var i = 0; i < all.length; i++) all[i].classList.add('collapsed');
-  });
-  document.getElementById('expand-all-btn').addEventListener('click', function() {
-    var all = elTree.querySelectorAll('.tree-children');
-    for (var i = 0; i < all.length; i++) all[i].classList.remove('collapsed');
-  });
-
-  // Auto-refresh
-  setInterval(function() {
-    var sids = Object.keys(sessions);
-    for (var i = 0; i < sids.length; i++) {
-      if (!sessions[sids[i]].ended) { renderTree(); return; }
-    }
-  }, 2000);
+  // Intervals
   setInterval(refreshUsageBars, 60000);
   setInterval(refreshSessionHistory, 30000);
 
