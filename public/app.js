@@ -332,7 +332,7 @@
       }
     }
 
-    while (elTranscript.children.length > 2000) {
+    while (elTranscript.children.length > 50000) {
       elTranscript.removeChild(elTranscript.lastChild);
     }
   }
@@ -348,7 +348,7 @@
     renderTranscript();
     highlightSelectedCard();
 
-    fetch('/api/sessions/' + sessionId + '/transcript?limit=500')
+    fetch('/api/sessions/' + sessionId + '/transcript?limit=10000')
       .then(function(r) { return r.json(); })
       .then(function(entries) {
         transcriptEntries = entries;
@@ -420,7 +420,7 @@
   }
 
   function refreshSessionCards() {
-    fetch('/api/sessions/history?limit=50')
+    fetch('/api/sessions/history?limit=500')
       .then(function(r) { return r.json(); })
       .then(function(rows) { sessionHistory = rows; renderSessionCards(); })
       .catch(function() {});
@@ -474,7 +474,7 @@
 
   // REST fallback: load sessions + auto-select latest on startup
   function initViaRest() {
-    fetch('/api/sessions/history?limit=50')
+    fetch('/api/sessions/history?limit=500')
       .then(function(r) { return r.json(); })
       .then(function(rows) {
         sessionHistory = rows;
