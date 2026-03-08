@@ -77,31 +77,35 @@ body {
   flex-direction: column;
 }
 
-/* Transcript entry */
+/* Transcript entry — compact */
 .t-entry {
   display: flex;
-  align-items: flex-start;
-  padding: 3px 10px;
+  align-items: center;
+  padding: 2px 10px;
   gap: 6px;
   border-bottom: 1px solid rgba(48, 54, 61, 0.25);
-  line-height: 1.45;
-  min-height: 22px;
+  line-height: 1.35;
+  min-height: 20px;
 }
 .t-entry:hover { background: rgba(22, 27, 34, 0.6); }
 
-.t-time { flex-shrink: 0; width: 44px; color: var(--text-muted); font-size: 10px; padding-top: 1px; }
+.t-time { flex-shrink: 0; width: 44px; color: var(--text-muted); font-size: 10px; }
 .t-agent {
   flex-shrink: 0; font-size: 9px; padding: 1px 5px; border-radius: 3px;
   font-weight: 600; letter-spacing: 0.2px; line-height: 14px;
   max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .t-type {
-  flex-shrink: 0; width: 14px; text-align: center; font-size: 11px; padding-top: 1px;
+  flex-shrink: 0; width: 14px; text-align: center; font-size: 11px;
 }
+
+/* Content — single line by default, expandable */
 .t-content {
-  flex: 1; overflow: hidden; word-break: break-word; white-space: pre-wrap;
-  color: var(--text-secondary);
+  flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  color: var(--text-secondary); cursor: default;
 }
+.t-content.truncated { cursor: pointer; }
+.t-content.expanded { white-space: pre-wrap; word-break: break-word; cursor: pointer; }
 
 /* Entry type styles */
 .t-entry.type-thinking { opacity: 0.75; }
@@ -114,7 +118,7 @@ body {
 .t-entry.type-tool_use .t-content { color: var(--yellow); }
 .t-entry.type-tool_use .t-type { color: var(--yellow); }
 
-/* Tool badge */
+/* Tool badge — compact */
 .t-tool-badge {
   flex-shrink: 0;
   font-size: 9px;
@@ -125,12 +129,45 @@ body {
   color: var(--text-muted);
   line-height: 14px;
   white-space: nowrap;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+
+/* Tool result status dot — inline indicator */
+.t-status-dot {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  font-size: 7px;
+  font-weight: 900;
+  line-height: 1;
+  margin-left: 4px;
+}
+.t-status-dot.success { background: var(--green); }
+.t-status-dot.error { background: var(--red); color: #fff; width: 12px; height: 12px; font-size: 8px; }
+
+/* Non-narrative types: hidden by default, shown when verbose */
+.t-entry.type-tool_result { display: none; }
+.t-entry.type-tool_use { display: none; }
+.t-entry.type-thinking { display: none; }
+
+/* Show all types when Verbose is checked (parent has .show-noise) */
+.show-noise .t-entry.type-tool_result { display: flex; }
+.show-noise .t-entry.type-tool_use { display: flex; }
+.show-noise .t-entry.type-thinking { display: flex; }
 
 .t-entry.type-tool_result .t-content { color: var(--text-muted); font-size: 10px; opacity: 0.7; }
 .t-entry.type-tool_result .t-type { color: var(--green); }
 .t-entry.type-tool_result.is-error .t-content { color: var(--red); }
 .t-entry.type-tool_result.is-error .t-type { color: var(--red); }
+
+/* Error tool_results always visible (even without verbose) */
+.t-entry.type-tool_result.is-error { display: flex; }
 
 .t-entry.type-user { background: rgba(88, 166, 255, 0.04); }
 .t-entry.type-user .t-content { color: var(--blue); font-weight: 600; }
@@ -139,15 +176,6 @@ body {
 .t-entry.type-agent_prompt { background: rgba(188, 140, 255, 0.04); }
 .t-entry.type-agent_prompt .t-content { color: var(--purple); }
 .t-entry.type-agent_prompt .t-type { color: var(--purple); }
-
-/* Collapsible content */
-.t-content.collapsed { max-height: 36px; overflow: hidden; cursor: pointer; }
-.t-content.collapsed::after {
-  content: ' [...]';
-  color: var(--text-muted);
-  font-style: normal;
-}
-.t-content.expanded { max-height: none; cursor: pointer; }
 
 /* Agent colors */
 .agent-main { background: rgba(88,166,255,0.15); color: var(--blue); }
@@ -208,4 +236,3 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
-

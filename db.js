@@ -88,16 +88,33 @@ export function insertEvent(event) {
 }
 
 export function insertTranscriptEntries(sessionId, entries) {
+  var dedupStmt = db.prepare(
+    'SELECT COUNT(*) FROM transcript WHERE session_id = ? AND timestamp = ? AND entry_type = ? AND agent = ? AND content = ?'
+  );
   for (var i = 0; i < entries.length; i++) {
     var e = entries[i];
     var content = e.text || e.summary || e.result || '';
     var usage = e.usage || {};
+    var entryType = e.entry_type || 'unknown';
+    var agent = e.agent || 'main';
+    var ts = e.timestamp || Date.now();
+
+    // Dedup: skip if identical entry exists
+    dedupStmt.bind([sessionId, ts, entryType, agent, content]);
+    if (dedupStmt.step()) {
+      var count = dedupStmt.get()[0];
+      dedupStmt.reset();
+      if (count > 0) continue;
+    } else {
+      dedupStmt.reset();
+    }
+
     db.run(
       'INSERT INTO transcript (session_id, entry_type, agent, agent_id, model, tool, tool_use_id, content, is_error, usage_input, usage_output, usage_cache_read, usage_cache_create, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         sessionId,
-        e.entry_type || 'unknown',
-        e.agent || 'main',
+        entryType,
+        agent,
         e.agent_id || null,
         e.model || null,
         e.tool || null,
@@ -108,10 +125,11 @@ export function insertTranscriptEntries(sessionId, entries) {
         usage.output || 0,
         usage.cache_read || 0,
         usage.cache_create || 0,
-        e.timestamp || Date.now()
+        ts
       ]
     );
   }
+  dedupStmt.free();
 }
 
 export function getTranscriptEntries(sessionId, limit, offset) {

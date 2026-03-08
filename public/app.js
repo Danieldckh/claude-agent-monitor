@@ -5,6 +5,7 @@
   var currentSessionId = null;
   var transcriptEntries = [];
   var liveMode = true;
+  var showNoise = false;
   var ws = null;
   var reconnectTimer = null;
   var sessionHistory = [];
@@ -17,6 +18,7 @@
   var elTranscript = document.getElementById('transcript-entries');
   var elSessionLabel = document.getElementById('panel-session-label');
   var elLiveCheck = document.getElementById('auto-scroll-check');
+  var elVerboseCheck = document.getElementById('verbose-check');
   var elConnectionDot = document.getElementById('connection-status');
   var elConnectionLabel = document.getElementById('connection-label');
   var elSessionCards = document.getElementById('session-cards');
@@ -24,6 +26,15 @@
   var elFilterAgent = document.getElementById('filter-agent');
 
   elLiveCheck.addEventListener('change', function() { liveMode = elLiveCheck.checked; });
+  elVerboseCheck.addEventListener('change', function() {
+    showNoise = elVerboseCheck.checked;
+    if (showNoise) {
+      elTranscript.classList.add('show-noise');
+    } else {
+      elTranscript.classList.remove('show-noise');
+    }
+    renderTranscript();
+  });
 
   elFilterType.addEventListener('change', function() {
     filterType = elFilterType.value;
@@ -87,6 +98,20 @@
     return node;
   }
 
+  // Shorten long MCP tool names
+  function shortToolName(name) {
+    if (!name) return '';
+    // mcp__plugin_playwright_playwright__browser_* → playwright
+    if (name.indexOf('mcp__plugin_playwright') === 0) return 'playwright';
+    // mcp__* → last segment after final __
+    if (name.indexOf('mcp__') === 0) {
+      var parts = name.split('__');
+      return parts[parts.length - 1];
+    }
+    // Already short (Read, Write, Edit, Bash, Grep, Glob, Agent, etc.)
+    return name;
+  }
+
   var agentColors = ['agent-0','agent-1','agent-2','agent-3','agent-4','agent-5','agent-6','agent-7'];
 
   function getAgentClass(agent) {
@@ -126,7 +151,19 @@
     agent_prompt: '\u{1F680}'
   };
 
-  function createEntryEl(entry, flash) {
+  // Build a map of tool_use_id → tool_result for merging
+  function buildResultMap(entries) {
+    var map = {};
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      if (e.entry_type === 'tool_result' && e.tool_use_id) {
+        map[e.tool_use_id] = e;
+      }
+    }
+    return map;
+  }
+
+  function createEntryEl(entry, flash, resultMap) {
     var type = entry.entry_type;
     var agent = entry.agent || 'main';
     var content = entry.content || '';
@@ -138,38 +175,56 @@
 
     var displayContent = content;
     var toolBadge = null;
+    var statusDot = null;
+    var truncateLen = 200;
 
     if (type === 'tool_use' && entry.tool) {
-      toolBadge = el('span', { className: 't-tool-badge' }, entry.tool);
-      displayContent = content;
+      toolBadge = el('span', { className: 't-tool-badge' }, shortToolName(entry.tool));
+      truncateLen = 100;
+
+      // Merge tool_result status into this row
+      if (resultMap && entry.tool_use_id && resultMap[entry.tool_use_id]) {
+        var result = resultMap[entry.tool_use_id];
+        if (result.is_error) {
+          statusDot = el('span', { className: 't-status-dot error' }, '!');
+        } else {
+          statusDot = el('span', { className: 't-status-dot success' });
+        }
+      }
     } else if (type === 'thinking') {
-      displayContent = content.length > 120 ? content.substring(0, 120) + '...' : content;
+      truncateLen = 80;
     } else if (type === 'tool_result') {
       if (entry.is_error) displayContent = 'Error: ' + content;
       else if (!content || !content.trim()) displayContent = 'Success';
       else if (content.length > 300) displayContent = 'Result (' + content.length + ' chars)';
-      else displayContent = content;
+    } else if (type === 'user') {
+      truncateLen = 80;
+    } else if (type === 'text') {
+      truncateLen = 100;
     } else if (type === 'agent_prompt') {
       displayContent = 'Agent task: ' + content;
     }
 
-    var isLong = displayContent.length > 200 || (displayContent.match(/\n/g) || []).length > 3;
+    // Single-line truncation for compact view
+    var oneLine = displayContent.replace(/\n/g, ' ').replace(/\s+/g, ' ');
+    var truncated = oneLine.length > truncateLen ? oneLine.substring(0, truncateLen) + '...' : oneLine;
+    var isExpandable = displayContent.length > truncateLen || displayContent.indexOf('\n') !== -1;
+
     var contentCls = 't-content';
-    if (isLong) contentCls += ' collapsed';
-    if (type === 'thinking') contentCls += ' collapsed';
+    if (isExpandable) contentCls += ' truncated';
 
-    var contentEl = el('span', { className: contentCls }, displayContent);
+    var contentEl = el('span', { className: contentCls }, truncated);
 
-    if (isLong || type === 'thinking') {
+    if (isExpandable) {
       contentEl.addEventListener('click', function() {
-        if (contentEl.classList.contains('collapsed')) {
-          contentEl.classList.remove('collapsed');
+        if (contentEl.classList.contains('truncated')) {
+          contentEl.classList.remove('truncated');
           contentEl.classList.add('expanded');
-          if (type === 'thinking') contentEl.textContent = content;
+          contentEl.textContent = displayContent;
         } else {
           contentEl.classList.remove('expanded');
-          contentEl.classList.add('collapsed');
-          if (type === 'thinking') contentEl.textContent = content.length > 120 ? content.substring(0, 120) + '...' : content;
+          contentEl.classList.add('truncated');
+          contentEl.textContent = truncated;
         }
       });
     }
@@ -181,8 +236,23 @@
     ];
     if (toolBadge) children.push(toolBadge);
     children.push(contentEl);
+    if (statusDot) children.push(statusDot);
 
     return el('div', { className: cls }, children);
+  }
+
+  // Client-side dedup: check for identical timestamp+type+agent+content
+  var seenEntryKeys = {};
+
+  function entryKey(e) {
+    return (e.timestamp || 0) + '|' + (e.entry_type || '') + '|' + (e.agent || 'main') + '|' + (e.content || '').substring(0, 100);
+  }
+
+  function isDuplicate(e) {
+    var k = entryKey(e);
+    if (seenEntryKeys[k]) return true;
+    seenEntryKeys[k] = true;
+    return false;
   }
 
   function getFilteredEntries() {
@@ -192,6 +262,16 @@
     }
     if (filterAgent !== 'all') {
       filtered = filtered.filter(function(e) { return (e.agent || 'main') === filterAgent; });
+    }
+    // When noise hidden: only show text, user, agent_prompt (+ error tool_results)
+    if (!showNoise) {
+      filtered = filtered.filter(function(e) {
+        if (e.entry_type === 'text') return true;
+        if (e.entry_type === 'user') return true;
+        if (e.entry_type === 'agent_prompt') return true;
+        if (e.entry_type === 'tool_result' && e.is_error) return true;
+        return false;
+      });
     }
     return filtered;
   }
@@ -203,24 +283,37 @@
       elTranscript.appendChild(el('div', { className: 'empty-state' }, 'No transcript entries'));
       return;
     }
+    var resultMap = buildResultMap(transcriptEntries);
     for (var i = 0; i < entries.length; i++) {
-      elTranscript.appendChild(createEntryEl(entries[i], false));
+      elTranscript.appendChild(createEntryEl(entries[i], false, resultMap));
     }
   }
 
   function prependEntries(newEntries) {
     newEntries.sort(function(a, b) { return (b.timestamp || 0) - (a.timestamp || 0); });
 
-    for (var i = newEntries.length - 1; i >= 0; i--) {
-      transcriptEntries.unshift(newEntries[i]);
-      getAgentClass(newEntries[i].agent);
+    // Client-side dedup
+    var unique = [];
+    for (var i = 0; i < newEntries.length; i++) {
+      if (!isDuplicate(newEntries[i])) unique.push(newEntries[i]);
+    }
+    if (unique.length === 0) return;
+
+    for (var j = unique.length - 1; j >= 0; j--) {
+      transcriptEntries.unshift(unique[j]);
+      getAgentClass(unique[j].agent);
     }
 
     var filtered = [];
-    for (var j = 0; j < newEntries.length; j++) {
-      var e = newEntries[j];
+    for (var k = 0; k < unique.length; k++) {
+      var e = unique[k];
       if (filterType !== 'all' && e.entry_type !== filterType) continue;
       if (filterAgent !== 'all' && (e.agent || 'main') !== filterAgent) continue;
+      if (!showNoise) {
+        if (e.entry_type !== 'text' && e.entry_type !== 'user' && e.entry_type !== 'agent_prompt') {
+          if (!(e.entry_type === 'tool_result' && e.is_error)) continue;
+        }
+      }
       filtered.push(e);
     }
 
@@ -229,8 +322,9 @@
     var emptyState = elTranscript.querySelector('.empty-state');
     if (emptyState) emptyState.remove();
 
-    for (var k = filtered.length - 1; k >= 0; k--) {
-      var entryEl = createEntryEl(filtered[k], true);
+    var resultMap = buildResultMap(transcriptEntries);
+    for (var m = filtered.length - 1; m >= 0; m--) {
+      var entryEl = createEntryEl(filtered[m], true, resultMap);
       if (elTranscript.firstChild) {
         elTranscript.insertBefore(entryEl, elTranscript.firstChild);
       } else {
@@ -249,6 +343,7 @@
     transcriptEntries = [];
     knownAgents = {};
     agentColorIndex = 0;
+    seenEntryKeys = {};
     updateAgentFilter();
     renderTranscript();
     highlightSelectedCard();
@@ -259,6 +354,7 @@
         transcriptEntries = entries;
         for (var i = 0; i < entries.length; i++) {
           getAgentClass(entries[i].agent);
+          isDuplicate(entries[i]); // seed dedup cache
         }
         renderTranscript();
       })
