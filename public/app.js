@@ -137,34 +137,52 @@
     if (flash) cls += ' t-new';
 
     var displayContent = content;
+    var toolBadge = null;
+
     if (type === 'tool_use' && entry.tool) {
-      displayContent = entry.tool + ' \u2192 ' + content;
+      toolBadge = el('span', { className: 't-tool-badge' }, entry.tool);
+      displayContent = content;
+    } else if (type === 'thinking') {
+      displayContent = content.length > 120 ? content.substring(0, 120) + '...' : content;
+    } else if (type === 'tool_result') {
+      if (entry.is_error) displayContent = 'Error: ' + content;
+      else if (!content || !content.trim()) displayContent = 'Success';
+      else if (content.length > 300) displayContent = 'Result (' + content.length + ' chars)';
+      else displayContent = content;
+    } else if (type === 'agent_prompt') {
+      displayContent = 'Agent task: ' + content;
     }
 
     var isLong = displayContent.length > 200 || (displayContent.match(/\n/g) || []).length > 3;
     var contentCls = 't-content';
     if (isLong) contentCls += ' collapsed';
+    if (type === 'thinking') contentCls += ' collapsed';
 
     var contentEl = el('span', { className: contentCls }, displayContent);
 
-    if (isLong) {
+    if (isLong || type === 'thinking') {
       contentEl.addEventListener('click', function() {
         if (contentEl.classList.contains('collapsed')) {
           contentEl.classList.remove('collapsed');
           contentEl.classList.add('expanded');
+          if (type === 'thinking') contentEl.textContent = content;
         } else {
           contentEl.classList.remove('expanded');
           contentEl.classList.add('collapsed');
+          if (type === 'thinking') contentEl.textContent = content.length > 120 ? content.substring(0, 120) + '...' : content;
         }
       });
     }
 
-    return el('div', { className: cls }, [
+    var children = [
       el('span', { className: 't-time' }, formatTime(entry.timestamp)),
       el('span', { className: 't-agent ' + getAgentClass(agent) }, getAgentLabel(agent)),
-      el('span', { className: 't-type' }, icon),
-      contentEl
-    ]);
+      el('span', { className: 't-type' }, icon)
+    ];
+    if (toolBadge) children.push(toolBadge);
+    children.push(contentEl);
+
+    return el('div', { className: cls }, children);
   }
 
   function getFilteredEntries() {
