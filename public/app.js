@@ -258,8 +258,11 @@
     };
     ws.onclose = function() {
       elConnectionDot.className = 'status-dot disconnected';
-      elConnectionLabel.textContent = 'Disconnected';
-      reconnectTimer = setTimeout(connect, 3000);
+      elConnectionLabel.textContent = 'Polling';
+      reconnectTimer = setTimeout(connect, 5000);
+    };
+    ws.onerror = function() {
+      ws.close();
     };
     ws.onmessage = function(evt) {
       try {
@@ -355,9 +358,49 @@
     document.getElementById('stat-output-tokens').textContent = formatNumber(s.output_tokens_today || 0);
   }
 
+  // REST fallback: load sessions + auto-select latest on startup
+  function initViaRest() {
+    fetch('/api/sessions/history?limit=50')
+      .then(function(r) { return r.json(); })
+      .then(function(rows) {
+        sessionHistory = rows;
+        renderSessionCards();
+        if (!currentSessionId && rows.length > 0) {
+          loadSession(rows[0].id);
+        }
+      })
+      .catch(function() {});
+    fetchStats();
+  }
+
+  // Poll for new transcript entries when WS is down
+  var pollTimer = null;
+  function startPolling() {
+    if (pollTimer) return;
+    pollTimer = setInterval(function() {
+      if (currentSessionId && liveMode) {
+        var newestTs = transcriptEntries.length > 0 ? transcriptEntries[0].timestamp : 0;
+        fetch('/api/sessions/' + currentSessionId + '/transcript?limit=50')
+          .then(function(r) { return r.json(); })
+          .then(function(entries) {
+            var fresh = [];
+            for (var i = 0; i < entries.length; i++) {
+              if (entries[i].timestamp > newestTs || entries[i].id > (transcriptEntries[0] && transcriptEntries[0].id || 0)) {
+                fresh.push(entries[i]);
+              }
+            }
+            if (fresh.length > 0) prependEntries(fresh);
+          })
+          .catch(function() {});
+      }
+      fetchStats();
+      refreshSessionCards();
+    }, 3000);
+  }
+
   setInterval(refreshSessionCards, 30000);
 
   connect();
-  fetchStats();
-  refreshSessionCards();
+  initViaRest();
+  startPolling();
 })();
