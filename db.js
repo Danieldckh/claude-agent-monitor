@@ -70,10 +70,15 @@ export function insertSession(session) {
 }
 
 export function insertEvent(event) {
+  // Store full event JSON as payload so timeline can reconstruct all fields
+  var payload = event.payload || null;
+  if (!payload && (event.event_type === 'agent_complete' || event.event_type === 'task_update' || event.event_type === 'session_start')) {
+    payload = JSON.stringify(event);
+  }
   db.run(
     `INSERT INTO events (session_id, event_type, agent_type, agent_id, parent_agent_id, payload, timestamp)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [event.session_id, event.event_type, event.agent_type || null, event.agent_id || null, event.parent_agent_id || null, event.payload || null, event.timestamp]
+    [event.session_id, event.event_type, event.agent_type || null, event.agent_id || null, event.parent_agent_id || null, payload, event.timestamp]
   );
   var result = db.exec('SELECT last_insert_rowid() AS lastID');
   var lastID = result.length > 0 ? result[0].values[0][0] : null;

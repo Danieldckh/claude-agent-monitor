@@ -150,6 +150,24 @@
     return { icon: icon, tag: tag, content: content };
   }
 
+  // Normalize a DB row into a full event object by merging payload JSON
+  function normalizeEvent(evt) {
+    if (!evt.payload) return evt;
+    try {
+      var parsed = JSON.parse(evt.payload);
+      // If payload is a full event JSON (has event_type), merge missing fields
+      if (parsed.event_type) {
+        var keys = Object.keys(parsed);
+        for (var i = 0; i < keys.length; i++) {
+          if (evt[keys[i]] === undefined || evt[keys[i]] === null) {
+            evt[keys[i]] = parsed[keys[i]];
+          }
+        }
+      }
+    } catch (e) { /* payload is not JSON, leave as-is */ }
+    return evt;
+  }
+
   function tryParsePayload(payload) {
     if (!payload) return {};
     try { return JSON.parse(payload); } catch (e) { return { tool: '', input: payload, result: payload }; }
@@ -207,7 +225,7 @@
     fetch('/api/sessions/' + sessionId + '/events')
       .then(function(r) { return r.json(); })
       .then(function(events) {
-        timelineEvents = events;
+        timelineEvents = events.map(normalizeEvent);
         // Sort by timestamp
         timelineEvents.sort(function(a, b) { return (a.timestamp || 0) - (b.timestamp || 0); });
         renderTimeline();
