@@ -6,7 +6,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --production
 
 COPY . .
-# v3 cache bust
+# v3.1 natural language summaries
 
 RUN mkdir -p data
 
